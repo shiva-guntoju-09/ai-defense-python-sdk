@@ -372,12 +372,12 @@ class TestContainerDeploy:
             content = f.read()
         assert "python:3.11" in content, "Dockerfile should use Python 3.11"
     
-    def test_dockerfile_copies_agentsec(self):
-        """Test that Dockerfile copies agentsec source."""
+    def test_dockerfile_copies_aidefense(self):
+        """Test that Dockerfile copies aidefense SDK source."""
         dockerfile = os.path.join(os.path.dirname(__file__), "..", "..", "container-deploy", "Dockerfile")
         with open(dockerfile, "r") as f:
             content = f.read()
-        assert "COPY agentsec" in content, "Dockerfile should copy agentsec source"
+        assert "COPY aidefense" in content, "Dockerfile should copy aidefense SDK source"
 
 
 # =============================================================================

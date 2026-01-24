@@ -74,10 +74,10 @@ class TestExampleStructure:
             requirements = os.path.join(project_dir, deploy_mode, "requirements.txt")
             assert os.path.isfile(requirements), f"{deploy_mode}/requirements.txt should exist"
             
-            # Verify agentsec is in requirements
+            # Verify cisco-aidefense-sdk is in requirements
             with open(requirements, "r") as f:
                 content = f.read()
-            assert "agentsec" in content, f"{deploy_mode}/requirements.txt should include agentsec"
+            assert "cisco-aidefense-sdk" in content, f"{deploy_mode}/requirements.txt should include cisco-aidefense-sdk"
 
     def test_kubernetes_configs_exist_for_gke(self):
         """Test that Kubernetes configs exist for GKE deployment."""
