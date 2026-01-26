@@ -26,7 +26,7 @@ if env_file.exists():
 
 # Enable protection before importing clients
 from aidefense.runtime import agentsec
-agentsec.protect(api_mode_llm="on_enforce")
+agentsec.protect(api_mode_llm="enforce")
 
 
 def main() -> None:
@@ -62,8 +62,8 @@ def main() -> None:
     )
     
     for chunk in stream:
-        content = chunk.choices[0].delta.content
-        if content:
+        if chunk.choices and chunk.choices[0].delta.content:
+            content = chunk.choices[0].delta.content
             print(content, end="", flush=True)
     
     print()

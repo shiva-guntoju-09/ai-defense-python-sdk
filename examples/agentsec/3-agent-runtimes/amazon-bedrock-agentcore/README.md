@@ -159,7 +159,7 @@ agentsec.protect(
     mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
     
     # API Mode Configuration
-    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "on_monitor"),
+    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
     api_mode_llm_endpoint=os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
     api_mode_llm_api_key=os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
     
@@ -196,7 +196,7 @@ All environment variables are loaded from the shared `examples/.env` file.
 |----------|-------------|----------|
 | `AI_DEFENSE_API_MODE_LLM_ENDPOINT` | AI Defense API endpoint | Yes |
 | `AI_DEFENSE_API_MODE_LLM_API_KEY` | AI Defense API key | Yes |
-| `AGENTSEC_API_MODE_LLM` | Mode: `off`, `on_monitor`, `on_enforce` | No (default: `on_monitor`) |
+| `AGENTSEC_API_MODE_LLM` | Mode: `off`, `monitor`, `enforce` | No (default: `monitor`) |
 | `AGENTSEC_API_MODE_FAIL_OPEN_LLM` | Allow requests if API unavailable | No (default: `true`) |
 
 #### Gateway Mode Variables (when `AGENTSEC_LLM_INTEGRATION_MODE=gateway`)

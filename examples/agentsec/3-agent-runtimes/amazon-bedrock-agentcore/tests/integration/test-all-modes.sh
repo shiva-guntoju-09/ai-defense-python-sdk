@@ -12,22 +12,37 @@
 #   - API Mode: Inspection via Cisco AI Defense API
 #   - Gateway Mode: Route through Cisco AI Defense Gateway
 #
+#   Test Modes:
+#   - Local (default): Tests agent locally using AWS Bedrock credentials only
+#   - Deploy (--deploy): DEPLOYS agents first, then tests real AWS endpoints
+#
 # For each test, verifies:
 #   1. LLM calls are intercepted by AI Defense
 #   2. Request inspection happens
 #   3. Response inspection happens (where applicable)
 #   4. No errors occur during execution
 #
+# Deploy Mode (--deploy):
+#   When running with --deploy, the script:
+#   1. REMOVES stale .bedrock_agentcore.yaml config (ensures fresh agent creation)
+#   2. DEPLOYS all specified agents to AWS by running:
+#      - direct:    ./direct-deploy/scripts/deploy.sh
+#      - container: ./container-deploy/scripts/deploy.sh
+#      - lambda:    ./lambda-deploy/scripts/deploy.sh
+#   3. Waits for agents to be ready
+#   4. RUNS integration tests against the deployed agents
+#
 # Usage:
-#   ./tests/integration/test-all-modes.sh                    # Run all tests (6 total)
+#   ./tests/integration/test-all-modes.sh                    # Run local tests (default)
+#   ./tests/integration/test-all-modes.sh --deploy           # Deploy first, then test
 #   ./tests/integration/test-all-modes.sh --verbose          # Verbose output
-#   ./tests/integration/test-all-modes.sh --api              # API mode only (3 tests)
-#   ./tests/integration/test-all-modes.sh --gateway          # Gateway mode only (3 tests)
-#   ./tests/integration/test-all-modes.sh direct             # Test direct deploy only (2 tests)
-#   ./tests/integration/test-all-modes.sh direct --api       # Test direct deploy, API mode only
+#   ./tests/integration/test-all-modes.sh --api              # API mode only
+#   ./tests/integration/test-all-modes.sh --gateway          # Gateway mode only
+#   ./tests/integration/test-all-modes.sh direct             # Test direct deploy only
+#   ./tests/integration/test-all-modes.sh --deploy direct    # Deploy direct only, then test
 # =============================================================================
 
-set -o pipefail
+set -euo pipefail
 
 # Colors for output
 RED='\033[0;31m'
@@ -62,11 +77,15 @@ fi
 ALL_DEPLOY_MODES=("direct" "container" "lambda")
 ALL_INTEGRATION_MODES=("api" "gateway")
 RUN_MCP_TESTS=true  # Set to false to skip MCP tests
+LOCAL_MODE=true     # When true (default), test locally without AWS deployment
 
 # Counters
 TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0
+
+# Timing tracking (using regular array with key:value format for bash 3 compatibility)
+DEPLOY_MODE_TIMES=()
 
 # =============================================================================
 # Helper Functions
@@ -106,7 +125,9 @@ show_help() {
     echo "Usage: $0 [OPTIONS] [DEPLOY_MODE]"
     echo ""
     echo "Options:"
-    echo "  --verbose, -v    Show detailed output"
+    echo "  --local          Run LOCAL tests (default) - tests agent with AWS Bedrock only"
+    echo "  --deploy         DEPLOY agents first, then run tests against AWS endpoints"
+    echo "  --verbose, -v    Show detailed output including deploy logs"
     echo "  --api            Test API mode only (default: both modes)"
     echo "  --gateway        Test Gateway mode only (default: both modes)"
     echo "  --no-mcp         Skip MCP tool protection tests"
@@ -114,20 +135,36 @@ show_help() {
     echo "  --help, -h       Show this help"
     echo ""
     echo "Deploy Modes:"
-    echo "  direct           Test direct code deploy"
-    echo "  container        Test container deploy (requires deployed container)"
-    echo "  lambda           Test lambda deploy"
+    echo "  direct           Direct code deploy to AgentCore"
+    echo "  container        Container deploy to AgentCore"
+    echo "  lambda           Lambda function deploy"
+    echo ""
+    echo "Test Modes:"
+    echo "  Without --deploy: Tests agent LOCALLY using AWS Bedrock credentials"
+    echo "                    Requires: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (or AWS profile)"
+    echo ""
+    echo "  With --deploy:    DEPLOYS agents to AWS first, then runs tests"
+    echo "                    Phase 1: Remove stale .bedrock_agentcore.yaml config"
+    echo "                    Phase 2: Run deploy scripts for specified modes"
+    echo "                      - ./direct-deploy/scripts/deploy.sh"
+    echo "                      - ./container-deploy/scripts/deploy.sh"
+    echo "                      - ./lambda-deploy/scripts/deploy.sh"
+    echo "                    Phase 3: Wait for agents to be ready"
+    echo "                    Phase 4: Run integration tests"
+    echo "                    Requires: AWS CLI, AgentCore CLI, Bedrock IAM permissions"
     echo ""
     echo "MCP Tests:"
     echo "  MCP tests verify AI Defense protection for MCP tool calls."
     echo "  Requires MCP_SERVER_URL environment variable (default: https://mcp.deepwiki.com/mcp)"
     echo ""
     echo "Examples:"
-    echo "  $0                      # Run all tests (LLM + MCP)"
-    echo "  $0 --verbose            # Run all tests with details"
-    echo "  $0 --api                # Run all deploy modes in API mode only"
+    echo "  $0                      # Run local tests (default)"
+    echo "  $0 --deploy             # Deploy all agents, then test"
+    echo "  $0 --deploy --verbose   # Deploy and test with detailed output"
+    echo "  $0 --deploy direct      # Deploy only direct agent, then test"
+    echo "  $0 --api                # Run local tests, API mode only"
+    echo "  $0 --deploy --api       # Deploy and test, API mode only"
     echo "  $0 --mcp-only           # Run only MCP tests"
-    echo "  $0 direct --api         # Test direct deploy, API mode only"
 }
 
 setup_log_dir() {
@@ -246,22 +283,496 @@ test_mcp_protection() {
 }
 
 # =============================================================================
-# Test Functions
+# Local Test Functions (test without AWS deployment)
 # =============================================================================
+
+test_direct_local() {
+    local integration_mode=$1
+    log_subheader "Testing: Direct LOCAL [$integration_mode mode]"
+    
+    local log_file="$LOG_DIR/direct-local-${integration_mode}.log"
+    
+    log_info "Mode: LOCAL (Strands agent with Bedrock directly)"
+    log_info "Integration mode: $integration_mode"
+    log_info "Running test with question: \"$TEST_QUESTION\""
+    
+    cd "$PROJECT_DIR"
+    
+    # Set the integration mode environment variable
+    export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
+    export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
+    
+    # Enable debug logging for verbose output
+    if [ "$VERBOSE" = "true" ]; then
+        export AGENTSEC_LOG_LEVEL="DEBUG"
+    fi
+    
+    local start_time=$(date +%s)
+    
+    # Run the agent directly using the shared agent factory
+    if [ -n "$TIMEOUT_CMD" ]; then
+        $TIMEOUT_CMD "$TIMEOUT_SECONDS" poetry run python -c "
+import sys
+sys.path.insert(0, '$PROJECT_DIR')
+from _shared import get_agent
+
+print('[test] Running Strands agent with Bedrock (protected by agentsec)...')
+result = get_agent()('$TEST_QUESTION')
+print(f'[test] Result: {result}')
+print('[SUCCESS] Local test completed')
+" > "$log_file" 2>&1
+        local exit_code=$?
+    else
+        poetry run python -c "
+import sys
+sys.path.insert(0, '$PROJECT_DIR')
+from _shared import get_agent
+
+print('[test] Running Strands agent with Bedrock (protected by agentsec)...')
+result = get_agent()('$TEST_QUESTION')
+print(f'[test] Result: {result}')
+print('[SUCCESS] Local test completed')
+" > "$log_file" 2>&1
+        local exit_code=$?
+    fi
+    
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    
+    log_info "Completed in ${duration}s (exit code: $exit_code)"
+    
+    # Validate results
+    local all_checks_passed=true
+    
+    # Check 1: agentsec is patched
+    if grep -q "Patched.*bedrock\|bedrock.*patched\|'bedrock'" "$log_file"; then
+        log_pass "Bedrock client patched by agentsec"
+    else
+        log_fail "Bedrock client NOT patched"
+        all_checks_passed=false
+    fi
+    
+    # Check 2: Request inspection
+    if grep -qi "Request inspection\|PATCHED CALL" "$log_file"; then
+        log_pass "Request inspection executed"
+    else
+        log_fail "Request inspection NOT executed"
+        all_checks_passed=false
+    fi
+    
+    # Check 3: Got a result
+    if grep -q "SUCCESS\|Result:" "$log_file"; then
+        log_pass "Agent returned result"
+    else
+        log_fail "No result from agent"
+        all_checks_passed=false
+    fi
+    
+    # Check 4: No security blocks
+    if grep -qE "SecurityPolicyError|BLOCKED" "$log_file"; then
+        log_fail "Security block found in output"
+        all_checks_passed=false
+    else
+        log_pass "No security blocks"
+    fi
+    
+    if [ "$VERBOSE" = "true" ]; then
+        echo ""
+        echo -e "    ${MAGENTA}─── Log Output ───${NC}"
+        grep -E "(Request inspection|Response inspection|AI Defense|decision|Patched|SUCCESS|Result)" "$log_file" | head -20 | sed 's/^/    /'
+    fi
+    
+    if [ "$all_checks_passed" = "true" ]; then
+        echo ""
+        echo -e "  ${GREEN}${BOLD}► Direct LOCAL [$integration_mode]: ALL CHECKS PASSED${NC}"
+        ((TESTS_PASSED++))
+        return 0
+    else
+        echo ""
+        echo -e "  ${RED}${BOLD}► Direct LOCAL [$integration_mode]: SOME CHECKS FAILED${NC}"
+        ((TESTS_FAILED++))
+        return 1
+    fi
+}
+
+test_container_local() {
+    local integration_mode=$1
+    log_subheader "Testing: Container LOCAL [$integration_mode mode]"
+    
+    local log_file="$LOG_DIR/container-local-${integration_mode}.log"
+    
+    log_info "Mode: LOCAL (Strands agent with Bedrock directly)"
+    log_info "Integration mode: $integration_mode"
+    log_info "Running test with question: \"$TEST_QUESTION\""
+    
+    cd "$PROJECT_DIR"
+    
+    # Set the integration mode environment variable
+    export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
+    export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
+    
+    # Enable debug logging for verbose output
+    if [ "$VERBOSE" = "true" ]; then
+        export AGENTSEC_LOG_LEVEL="DEBUG"
+    fi
+    
+    local start_time=$(date +%s)
+    
+    # Run the container app code locally (same agent, different entrypoint)
+    if [ -n "$TIMEOUT_CMD" ]; then
+        $TIMEOUT_CMD "$TIMEOUT_SECONDS" poetry run python -c "
+import sys
+sys.path.insert(0, '$PROJECT_DIR')
+from _shared import get_agent
+
+print('[test] Running container agent code locally (protected by agentsec)...')
+result = get_agent()('$TEST_QUESTION')
+print(f'[test] Result: {result}')
+print('[SUCCESS] Container local test completed')
+" > "$log_file" 2>&1
+        local exit_code=$?
+    else
+        poetry run python -c "
+import sys
+sys.path.insert(0, '$PROJECT_DIR')
+from _shared import get_agent
+
+print('[test] Running container agent code locally (protected by agentsec)...')
+result = get_agent()('$TEST_QUESTION')
+print(f'[test] Result: {result}')
+print('[SUCCESS] Container local test completed')
+" > "$log_file" 2>&1
+        local exit_code=$?
+    fi
+    
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    
+    log_info "Completed in ${duration}s (exit code: $exit_code)"
+    
+    # Validate results (same as direct local)
+    local all_checks_passed=true
+    
+    if grep -q "Patched.*bedrock\|bedrock.*patched\|'bedrock'" "$log_file"; then
+        log_pass "Bedrock client patched by agentsec"
+    else
+        log_fail "Bedrock client NOT patched"
+        all_checks_passed=false
+    fi
+    
+    if grep -qi "Request inspection\|PATCHED CALL" "$log_file"; then
+        log_pass "Request inspection executed"
+    else
+        log_fail "Request inspection NOT executed"
+        all_checks_passed=false
+    fi
+    
+    if grep -q "SUCCESS\|Result:" "$log_file"; then
+        log_pass "Agent returned result"
+    else
+        log_fail "No result from agent"
+        all_checks_passed=false
+    fi
+    
+    if grep -qE "SecurityPolicyError|BLOCKED" "$log_file"; then
+        log_fail "Security block found in output"
+        all_checks_passed=false
+    else
+        log_pass "No security blocks"
+    fi
+    
+    if [ "$VERBOSE" = "true" ]; then
+        echo ""
+        echo -e "    ${MAGENTA}─── Log Output ───${NC}"
+        grep -E "(Request inspection|Response inspection|AI Defense|decision|Patched|SUCCESS|Result)" "$log_file" | head -20 | sed 's/^/    /'
+    fi
+    
+    if [ "$all_checks_passed" = "true" ]; then
+        echo ""
+        echo -e "  ${GREEN}${BOLD}► Container LOCAL [$integration_mode]: ALL CHECKS PASSED${NC}"
+        ((TESTS_PASSED++))
+        return 0
+    else
+        echo ""
+        echo -e "  ${RED}${BOLD}► Container LOCAL [$integration_mode]: SOME CHECKS FAILED${NC}"
+        ((TESTS_FAILED++))
+        return 1
+    fi
+}
+
+test_lambda_local() {
+    local integration_mode=$1
+    log_subheader "Testing: Lambda LOCAL [$integration_mode mode]"
+    
+    local log_file="$LOG_DIR/lambda-local-${integration_mode}.log"
+    
+    log_info "Mode: LOCAL (Lambda handler invoked directly)"
+    log_info "Integration mode: $integration_mode"
+    log_info "Running test with question: \"$TEST_QUESTION\""
+    
+    cd "$PROJECT_DIR"
+    
+    # Set the integration mode environment variable
+    export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
+    export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
+    
+    # Enable debug logging for verbose output
+    if [ "$VERBOSE" = "true" ]; then
+        export AGENTSEC_LOG_LEVEL="DEBUG"
+    fi
+    
+    local start_time=$(date +%s)
+    
+    # Run the Lambda handler directly
+    if [ -n "$TIMEOUT_CMD" ]; then
+        $TIMEOUT_CMD "$TIMEOUT_SECONDS" poetry run python -c "
+import sys
+import json
+sys.path.insert(0, '$PROJECT_DIR/lambda-deploy')
+sys.path.insert(0, '$PROJECT_DIR')
+
+# Import the lambda handler (this also imports _shared which configures agentsec)
+from lambda_handler import handler
+
+print('[test] Invoking Lambda handler locally (protected by agentsec)...')
+event = {'prompt': '$TEST_QUESTION'}
+context = None
+result = handler(event, context)
+print(f'[test] Result: {json.dumps(result)}')
+print('[SUCCESS] Lambda local test completed')
+" > "$log_file" 2>&1
+        local exit_code=$?
+    else
+        poetry run python -c "
+import sys
+import json
+sys.path.insert(0, '$PROJECT_DIR/lambda-deploy')
+sys.path.insert(0, '$PROJECT_DIR')
+
+# Import the lambda handler (this also imports _shared which configures agentsec)
+from lambda_handler import handler
+
+print('[test] Invoking Lambda handler locally (protected by agentsec)...')
+event = {'prompt': '$TEST_QUESTION'}
+context = None
+result = handler(event, context)
+print(f'[test] Result: {json.dumps(result)}')
+print('[SUCCESS] Lambda local test completed')
+" > "$log_file" 2>&1
+        local exit_code=$?
+    fi
+    
+    local end_time=$(date +%s)
+    local duration=$((end_time - start_time))
+    
+    log_info "Completed in ${duration}s (exit code: $exit_code)"
+    
+    # Validate results
+    local all_checks_passed=true
+    
+    if grep -q "Patched.*bedrock\|bedrock.*patched\|'bedrock'" "$log_file"; then
+        log_pass "Bedrock client patched by agentsec"
+    else
+        log_fail "Bedrock client NOT patched"
+        all_checks_passed=false
+    fi
+    
+    if grep -qi "Request inspection\|PATCHED CALL" "$log_file"; then
+        log_pass "Request inspection executed"
+    else
+        log_fail "Request inspection NOT executed"
+        all_checks_passed=false
+    fi
+    
+    if grep -q "SUCCESS\|result" "$log_file"; then
+        log_pass "Lambda handler returned result"
+    else
+        log_fail "No result from Lambda handler"
+        all_checks_passed=false
+    fi
+    
+    if grep -qE "SecurityPolicyError|BLOCKED" "$log_file"; then
+        log_fail "Security block found in output"
+        all_checks_passed=false
+    else
+        log_pass "No security blocks"
+    fi
+    
+    if [ "$VERBOSE" = "true" ]; then
+        echo ""
+        echo -e "    ${MAGENTA}─── Log Output ───${NC}"
+        grep -E "(Request inspection|Response inspection|AI Defense|decision|Patched|SUCCESS|Result)" "$log_file" | head -20 | sed 's/^/    /'
+    fi
+    
+    if [ "$all_checks_passed" = "true" ]; then
+        echo ""
+        echo -e "  ${GREEN}${BOLD}► Lambda LOCAL [$integration_mode]: ALL CHECKS PASSED${NC}"
+        ((TESTS_PASSED++))
+        return 0
+    else
+        echo ""
+        echo -e "  ${RED}${BOLD}► Lambda LOCAL [$integration_mode]: SOME CHECKS FAILED${NC}"
+        ((TESTS_FAILED++))
+        return 1
+    fi
+}
+
+# =============================================================================
+# Deploy Test Functions (test with AWS deployment)
+# =============================================================================
+
+# Helper: Validate agent exists in AWS
+# Note: This uses boto3 since aws CLI may not support bedrock-agentcore service yet
+validate_agent_exists() {
+    local agent_name=$1
+    local config_file="$PROJECT_DIR/.bedrock_agentcore.yaml"
+    
+    # Use Python/boto3 to validate the agent exists
+    # This is more reliable than CLI as bedrock-agentcore is a newer service
+    local validation_result
+    validation_result=$(poetry run python3 -c "
+import yaml
+import boto3
+import sys
+from botocore.exceptions import ClientError
+
+try:
+    with open('$config_file') as f:
+        config = yaml.safe_load(f)
+    
+    agent_config = config.get('agents', {}).get('$agent_name', {})
+    agent_arn = agent_config.get('bedrock_agentcore', {}).get('agent_arn', '')
+    region = agent_config.get('aws', {}).get('region', 'us-west-2')
+    
+    if not agent_arn:
+        print('NO_ARN')
+        sys.exit(1)
+    
+    # Extract agent runtime ID from ARN
+    agent_id = agent_arn.split('/')[-1]
+    
+    # Try to get the agent runtime status
+    client = boto3.client('bedrock-agentcore', region_name=region)
+    response = client.get_agent_runtime(agentRuntimeId=agent_id)
+    
+    # Check if the runtime has a valid status
+    status = response.get('status', 'UNKNOWN')
+    if status in ['READY', 'RUNNING', 'CREATING']:
+        print('EXISTS')
+        sys.exit(0)
+    else:
+        print(f'STATUS_{status}')
+        sys.exit(1)
+        
+except ClientError as e:
+    error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+    if error_code == 'ResourceNotFoundException':
+        print('NOT_FOUND')
+    elif error_code == 'AccessDeniedException':
+        print('ACCESS_DENIED')
+    else:
+        print(f'ERROR_{error_code}')
+    sys.exit(1)
+except Exception as e:
+    print(f'ERROR_{type(e).__name__}')
+    sys.exit(1)
+" 2>/dev/null) || validation_result="ERROR"
+    
+    case "$validation_result" in
+        "EXISTS")
+            return 0
+            ;;
+        "NO_ARN")
+            log_info "No agent ARN found in config for '$agent_name'"
+            return 1
+            ;;
+        "NOT_FOUND")
+            log_info "Agent not found in AWS (ResourceNotFoundException)"
+            return 1
+            ;;
+        "ACCESS_DENIED")
+            log_info "AWS access denied - check credentials"
+            # Return 1 to trigger deployment attempt
+            return 1
+            ;;
+        STATUS_*)
+            log_info "Agent status: ${validation_result#STATUS_}"
+            return 1
+            ;;
+        *)
+            log_info "Could not validate agent (${validation_result})"
+            # Return 1 to trigger deployment attempt
+            return 1
+            ;;
+    esac
+}
+
+# Helper: Auto-deploy an agent if it doesn't exist
+# Returns 0 if agent exists or was successfully deployed, 1 otherwise
+ensure_agent_deployed() {
+    local agent_name=$1
+    local deploy_script=$2
+    local deploy_log="$LOG_DIR/${agent_name}-deploy.log"
+    
+    # First check if agent already exists
+    log_info "Checking if agent '$agent_name' exists in AWS..."
+    if validate_agent_exists "$agent_name"; then
+        log_pass "Agent '$agent_name' already exists in AWS"
+        return 0
+    fi
+    
+    # Agent doesn't exist, try to deploy it
+    log_info "Agent '$agent_name' not found, deploying automatically..."
+    
+    if [ ! -f "$deploy_script" ]; then
+        log_fail "Deploy script not found: $deploy_script"
+        return 1
+    fi
+    
+    # Run the deploy script
+    log_info "Running: $deploy_script"
+    local deploy_start=$(date +%s)
+    
+    if bash "$deploy_script" > "$deploy_log" 2>&1; then
+        local deploy_end=$(date +%s)
+        local deploy_duration=$((deploy_end - deploy_start))
+        log_pass "Agent '$agent_name' deployed successfully (${deploy_duration}s)"
+        
+        # Wait a bit for the agent to be ready
+        log_info "Waiting for agent to be ready..."
+        sleep 10
+        
+        # Verify deployment succeeded
+        if validate_agent_exists "$agent_name"; then
+            log_pass "Agent '$agent_name' is ready"
+            return 0
+        else
+            log_fail "Agent deployed but not found in AWS (may need more time)"
+            if [ "$VERBOSE" = "true" ]; then
+                echo ""
+                echo -e "    ${MAGENTA}─── Deploy Log (last 20 lines) ───${NC}"
+                tail -20 "$deploy_log" | sed 's/^/    /'
+            fi
+            return 1
+        fi
+    else
+        log_fail "Deployment failed for '$agent_name'"
+        log_info "See log: $deploy_log"
+        if [ "$VERBOSE" = "true" ]; then
+            echo ""
+            echo -e "    ${MAGENTA}─── Deploy Log (last 30 lines) ───${NC}"
+            tail -30 "$deploy_log" | sed 's/^/    /'
+        fi
+        return 1
+    fi
+}
 
 test_direct_deploy() {
     local integration_mode=$1
     log_subheader "Testing: Direct Deploy [$integration_mode mode]"
     
     local log_file="$LOG_DIR/direct-deploy-${integration_mode}.log"
-    
-    # Check if agent is deployed
-    if [ ! -f "$PROJECT_DIR/.bedrock_agentcore.yaml" ]; then
-        log_fail "Agent not deployed (.bedrock_agentcore.yaml not found)"
-        log_info "Run: ./direct-deploy/scripts/deploy.sh first"
-        ((TESTS_FAILED++))
-        return 1
-    fi
+    local agent_name="agentcore_sre_direct"
     
     # Check if test script exists
     local test_script="$PROJECT_DIR/direct-deploy/test_with_protection.py"
@@ -271,29 +782,43 @@ test_direct_deploy() {
         return 1
     fi
     
+    # Note: Agent should already be deployed by deploy_agents() phase
+    
     log_info "Integration mode: $integration_mode"
     log_info "Running test with question: \"$TEST_QUESTION\""
     
     cd "$PROJECT_DIR"
     
-    # Set the integration mode environment variable
+    # Set the integration mode and agent name environment variables
     export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
+    export AGENTCORE_AGENT_NAME="$agent_name"
     
-    # Run the test
+    # Run the test (capture exit code without failing due to set -e)
     local start_time=$(date +%s)
+    local exit_code=0
     
     if [ -n "$TIMEOUT_CMD" ]; then
-        $TIMEOUT_CMD "$TIMEOUT_SECONDS" poetry run python "$test_script" "$TEST_QUESTION" > "$log_file" 2>&1
-        local exit_code=$?
+        $TIMEOUT_CMD "$TIMEOUT_SECONDS" poetry run python "$test_script" "$TEST_QUESTION" > "$log_file" 2>&1 || exit_code=$?
     else
-        poetry run python "$test_script" "$TEST_QUESTION" > "$log_file" 2>&1
-        local exit_code=$?
+        poetry run python "$test_script" "$TEST_QUESTION" > "$log_file" 2>&1 || exit_code=$?
     fi
     
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
     log_info "Completed in ${duration}s (exit code: $exit_code)"
+    
+    # Check for ResourceNotFoundException (agent not found in AWS)
+    if grep -q "ResourceNotFoundException" "$log_file"; then
+        log_fail "Agent not found in AWS (ResourceNotFoundException)"
+        log_info "The agent ARN in .bedrock_agentcore.yaml may be stale."
+        log_info "Run: ./direct-deploy/scripts/deploy.sh to redeploy"
+        if [ "$VERBOSE" = "true" ]; then
+            grep -A2 "ResourceNotFoundException" "$log_file" | head -5 | sed 's/^/    /'
+        fi
+        ((TESTS_FAILED++))
+        return 1
+    fi
     
     # Validate results
     local all_checks_passed=true
@@ -365,34 +890,7 @@ test_lambda_deploy() {
     local log_file="$LOG_DIR/lambda-deploy-${integration_mode}.log"
     local function_name="${FUNCTION_NAME:-agentcore-sre-lambda}"
     
-    # Check if function exists, if not deploy it automatically
-    if ! aws lambda get-function --function-name "$function_name" --region "${AWS_REGION:-us-west-2}" > /dev/null 2>&1; then
-        log_info "Lambda function not found, deploying automatically..."
-        local deploy_script="$PROJECT_DIR/lambda-deploy/scripts/deploy.sh"
-        
-        if [ ! -f "$deploy_script" ]; then
-            log_fail "Lambda deploy script not found: $deploy_script"
-            ((TESTS_FAILED++))
-            return 1
-        fi
-        
-        # Run deploy script
-        local deploy_log="$LOG_DIR/lambda-deploy-setup.log"
-        if bash "$deploy_script" > "$deploy_log" 2>&1; then
-            log_pass "Lambda function deployed successfully"
-        else
-            log_fail "Lambda deployment failed (see $deploy_log)"
-            if [ "$VERBOSE" = "true" ]; then
-                tail -20 "$deploy_log" | sed 's/^/    /'
-            fi
-            ((TESTS_FAILED++))
-            return 1
-        fi
-        
-        # Wait for function to be ready
-        log_info "Waiting for Lambda to be ready..."
-        sleep 5
-    fi
+    # Note: Lambda should already be deployed by deploy_agents() phase
     
     log_info "Integration mode: $integration_mode"
     log_info "Invoking Lambda: $function_name"
@@ -401,16 +899,16 @@ test_lambda_deploy() {
     # Note: Lambda integration mode is configured at deploy time, not runtime
     # This test verifies the Lambda works; integration mode depends on Lambda's env vars
     
-    # Invoke Lambda
+    # Invoke Lambda (capture exit code without triggering set -e)
     local start_time=$(date +%s)
+    local exit_code=0
     
     aws lambda invoke \
         --function-name "$function_name" \
         --region "${AWS_REGION:-us-west-2}" \
         --payload "{\"prompt\": \"$TEST_QUESTION\"}" \
         --cli-binary-format raw-in-base64-out \
-        /tmp/lambda_response.json > "$log_file" 2>&1
-    local exit_code=$?
+        /tmp/lambda_response.json > "$log_file" 2>&1 || exit_code=$?
     
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
@@ -477,14 +975,9 @@ test_container_deploy() {
     log_subheader "Testing: Container Deploy [$integration_mode mode]"
     
     local log_file="$LOG_DIR/container-deploy-${integration_mode}.log"
+    local agent_name="agentcore_sre_container"
     
-    # Check if container agent is configured
-    if ! grep -q "agentcore_sre_container" "$PROJECT_DIR/.bedrock_agentcore.yaml" 2>/dev/null; then
-        log_fail "Container agent not configured"
-        log_info "Run: ./container-deploy/scripts/deploy.sh first"
-        ((TESTS_FAILED++))
-        return 1
-    fi
+    # Note: Agent should already be deployed by deploy_agents() phase
     
     log_info "Integration mode: $integration_mode"
     log_info "Invoking container agent"
@@ -495,16 +988,28 @@ test_container_deploy() {
     # Note: Container integration mode is configured at deploy time via container env vars
     # This test verifies the container works
     
-    # Invoke via agentcore CLI
+    # Invoke via agentcore CLI (capture exit code without triggering set -e)
     local start_time=$(date +%s)
+    local exit_code=0
     
-    poetry run agentcore invoke --agent agentcore_sre_container "{\"prompt\": \"$TEST_QUESTION\"}" > "$log_file" 2>&1
-    local exit_code=$?
+    poetry run agentcore invoke --agent agentcore_sre_container "{\"prompt\": \"$TEST_QUESTION\"}" > "$log_file" 2>&1 || exit_code=$?
     
     local end_time=$(date +%s)
     local duration=$((end_time - start_time))
     
     log_info "Completed in ${duration}s (exit code: $exit_code)"
+    
+    # Check for ResourceNotFoundException (agent not found in AWS)
+    if grep -q "ResourceNotFoundException" "$log_file"; then
+        log_fail "Agent not found in AWS (ResourceNotFoundException)"
+        log_info "The agent ARN in .bedrock_agentcore.yaml may be stale."
+        log_info "Run: ./container-deploy/scripts/deploy.sh to redeploy"
+        if [ "$VERBOSE" = "true" ]; then
+            grep -A2 "ResourceNotFoundException" "$log_file" | head -5 | sed 's/^/    /'
+        fi
+        ((TESTS_FAILED++))
+        return 1
+    fi
     
     # Validate results
     local all_checks_passed=true
@@ -564,6 +1069,14 @@ while [[ $# -gt 0 ]]; do
             show_help
             exit 0
             ;;
+        --local)
+            LOCAL_MODE=true
+            shift
+            ;;
+        --deploy)
+            LOCAL_MODE=false
+            shift
+            ;;
         --verbose|-v)
             VERBOSE="true"
             shift
@@ -607,7 +1120,16 @@ if [ ${#INTEGRATION_MODES_TO_TEST[@]} -eq 0 ]; then
 fi
 
 # Setup
-log_header "AgentCore Integration Tests"
+if [ "$LOCAL_MODE" = "true" ]; then
+    log_header "AgentCore Integration Tests (LOCAL MODE)"
+    echo ""
+    echo -e "  ${BLUE}LOCAL MODE: Testing agent locally using AWS Bedrock${NC}"
+    echo -e "  ${BLUE}Use --deploy flag to deploy and test real AWS endpoints${NC}"
+else
+    log_header "AgentCore Integration Tests (DEPLOY MODE)"
+    echo ""
+    echo -e "  ${YELLOW}DEPLOY MODE: Testing with real AWS AgentCore/Lambda endpoints${NC}"
+fi
 echo ""
 echo "  Project:          $PROJECT_DIR"
 if [ "$MCP_ONLY" = "true" ]; then
@@ -617,6 +1139,7 @@ elif [ "$RUN_MCP_TESTS" = "false" ]; then
 else
     echo "  Test type:        LLM + MCP"
 fi
+echo "  Test mode:        $([ "$LOCAL_MODE" = "true" ] && echo "local" || echo "deploy")"
 echo "  Deploy modes:     ${DEPLOY_MODES_TO_TEST[*]}"
 echo "  Integration modes: ${INTEGRATION_MODES_TO_TEST[*]}"
 echo "  MCP Server:       ${MCP_SERVER_URL:-not set}"
@@ -634,10 +1157,15 @@ log_info "Installing dependencies..."
 cd "$PROJECT_DIR"
 poetry install --quiet 2>/dev/null || poetry install
 
-# Install agentcore CLI (bedrock-agentcore-starter-toolkit) if not available
-if ! poetry run agentcore --version &> /dev/null; then
-    log_info "Installing AgentCore CLI..."
-    poetry run pip install --quiet bedrock-agentcore-starter-toolkit
+# Install agentcore CLI (bedrock-agentcore-starter-toolkit) only for deploy mode
+if [ "$LOCAL_MODE" = "false" ]; then
+    if ! poetry run agentcore --version &> /dev/null; then
+        log_info "Installing AgentCore CLI..."
+        if ! poetry run pip install --quiet bedrock-agentcore-starter-toolkit 2>/dev/null; then
+            echo -e "${YELLOW}⚠${NC} AgentCore CLI installation failed (dependency conflict)."
+            echo -e "   Deploy mode tests may fail. Try: pip install bedrock-agentcore-starter-toolkit"
+        fi
+    fi
 fi
 
 # Load shared environment variables
@@ -652,25 +1180,194 @@ fi
 # Setup log directory
 setup_log_dir
 
+# =============================================================================
+# Pre-Deploy Agents (deploy mode only)
+# =============================================================================
+# In deploy mode, run all necessary deploy scripts BEFORE running tests
+# This ensures agents are deployed/updated before we test them
+
+deploy_agents() {
+    log_header "Deploying Agents to AWS"
+    
+    local deploy_start_time=$(date +%s)
+    local deploy_failed=false
+    local config_file="$PROJECT_DIR/.bedrock_agentcore.yaml"
+    
+    # Remove stale config file if it exists
+    # This ensures fresh agent creation instead of trying to update non-existent agents
+    if [ -f "$config_file" ]; then
+        log_info "Removing stale config file: .bedrock_agentcore.yaml"
+        log_info "This ensures fresh agent creation instead of updating old agent IDs"
+        rm -f "$config_file"
+        log_pass "Stale config removed"
+    fi
+    
+    for deploy_mode in "${DEPLOY_MODES_TO_TEST[@]}"; do
+        case $deploy_mode in
+            direct)
+                log_subheader "Deploying: Direct Code Agent"
+                local deploy_script="$PROJECT_DIR/direct-deploy/scripts/deploy.sh"
+                local deploy_log="$LOG_DIR/deploy-direct.log"
+                
+                if [ ! -f "$deploy_script" ]; then
+                    log_fail "Deploy script not found: $deploy_script"
+                    deploy_failed=true
+                    continue
+                fi
+                
+                log_info "Running: $deploy_script"
+                local start_time=$(date +%s)
+                
+                if bash "$deploy_script" > "$deploy_log" 2>&1; then
+                    local end_time=$(date +%s)
+                    local duration=$((end_time - start_time))
+                    log_pass "Direct agent deployed successfully (${duration}s)"
+                else
+                    log_fail "Direct agent deployment failed"
+                    log_info "See log: $deploy_log"
+                    if [ "$VERBOSE" = "true" ]; then
+                        echo ""
+                        echo -e "    ${MAGENTA}─── Deploy Log (last 30 lines) ───${NC}"
+                        tail -30 "$deploy_log" | sed 's/^/    /'
+                    fi
+                    deploy_failed=true
+                fi
+                ;;
+            
+            container)
+                log_subheader "Deploying: Container Agent"
+                local deploy_script="$PROJECT_DIR/container-deploy/scripts/deploy.sh"
+                local deploy_log="$LOG_DIR/deploy-container.log"
+                
+                if [ ! -f "$deploy_script" ]; then
+                    log_fail "Deploy script not found: $deploy_script"
+                    deploy_failed=true
+                    continue
+                fi
+                
+                log_info "Running: $deploy_script"
+                local start_time=$(date +%s)
+                
+                if bash "$deploy_script" > "$deploy_log" 2>&1; then
+                    local end_time=$(date +%s)
+                    local duration=$((end_time - start_time))
+                    log_pass "Container agent deployed successfully (${duration}s)"
+                else
+                    log_fail "Container agent deployment failed"
+                    log_info "See log: $deploy_log"
+                    if [ "$VERBOSE" = "true" ]; then
+                        echo ""
+                        echo -e "    ${MAGENTA}─── Deploy Log (last 30 lines) ───${NC}"
+                        tail -30 "$deploy_log" | sed 's/^/    /'
+                    fi
+                    deploy_failed=true
+                fi
+                ;;
+            
+            lambda)
+                log_subheader "Deploying: Lambda Function"
+                local deploy_script="$PROJECT_DIR/lambda-deploy/scripts/deploy.sh"
+                local deploy_log="$LOG_DIR/deploy-lambda.log"
+                
+                if [ ! -f "$deploy_script" ]; then
+                    log_fail "Deploy script not found: $deploy_script"
+                    deploy_failed=true
+                    continue
+                fi
+                
+                log_info "Running: $deploy_script"
+                local start_time=$(date +%s)
+                
+                if bash "$deploy_script" > "$deploy_log" 2>&1; then
+                    local end_time=$(date +%s)
+                    local duration=$((end_time - start_time))
+                    log_pass "Lambda function deployed successfully (${duration}s)"
+                else
+                    log_fail "Lambda deployment failed"
+                    log_info "See log: $deploy_log"
+                    if [ "$VERBOSE" = "true" ]; then
+                        echo ""
+                        echo -e "    ${MAGENTA}─── Deploy Log (last 30 lines) ───${NC}"
+                        tail -30 "$deploy_log" | sed 's/^/    /'
+                    fi
+                    deploy_failed=true
+                fi
+                ;;
+        esac
+    done
+    
+    # Wait for agents to be ready
+    if [ "$deploy_failed" = "false" ]; then
+        log_info "Waiting for agents to be ready (10s)..."
+        sleep 10
+        log_pass "All agents deployed successfully"
+    else
+        log_fail "Some deployments failed - tests may not work correctly"
+    fi
+    
+    # Calculate and display total deployment time
+    local deploy_end_time=$(date +%s)
+    local deploy_duration=$((deploy_end_time - deploy_start_time))
+    local deploy_min=$((deploy_duration / 60))
+    local deploy_sec=$((deploy_duration % 60))
+    echo ""
+    echo -e "  ${BOLD}Deployment completed in ${deploy_min}m ${deploy_sec}s${NC}"
+    
+    # Store deployment time for final summary
+    DEPLOY_MODE_TIMES+=("deployment:$deploy_duration")
+    
+    return 0  # Continue to tests even if some deployments failed
+}
+
+# Track overall start time (includes deployment)
+TOTAL_START_TIME=$(date +%s)
+
+# Deploy agents if in deploy mode
+if [ "$LOCAL_MODE" = "false" ] && [ "$RUN_LLM_TESTS" = "true" ]; then
+    deploy_agents
+fi
+
 # Run tests - iterate over deployment modes and integration modes
 log_header "Running Tests"
 
 # Run LLM tests (deploy modes x integration modes)
+# Note: Use "|| true" to ensure test failures don't exit the script (set -e)
 if [ "$RUN_LLM_TESTS" = "true" ]; then
     for deploy_mode in "${DEPLOY_MODES_TO_TEST[@]}"; do
+        DEPLOY_MODE_START=$(date +%s)
+        
         for integration_mode in "${INTEGRATION_MODES_TO_TEST[@]}"; do
-            case $deploy_mode in
-                direct)
-                    test_direct_deploy "$integration_mode"
-                    ;;
-                container)
-                    test_container_deploy "$integration_mode"
-                    ;;
-                lambda)
-                    test_lambda_deploy "$integration_mode"
-                    ;;
-            esac
+            if [ "$LOCAL_MODE" = "true" ]; then
+                # Local tests - invoke agent directly without AWS deployment
+                case $deploy_mode in
+                    direct)
+                        test_direct_local "$integration_mode" || true
+                        ;;
+                    container)
+                        test_container_local "$integration_mode" || true
+                        ;;
+                    lambda)
+                        test_lambda_local "$integration_mode" || true
+                        ;;
+                esac
+            else
+                # Deploy tests - test with real AWS endpoints
+                case $deploy_mode in
+                    direct)
+                        test_direct_deploy "$integration_mode" || true
+                        ;;
+                    container)
+                        test_container_deploy "$integration_mode" || true
+                        ;;
+                    lambda)
+                        test_lambda_deploy "$integration_mode" || true
+                        ;;
+                esac
+            fi
         done
+        
+        DEPLOY_MODE_END=$(date +%s)
+        DEPLOY_MODE_TIMES+=("$deploy_mode:$((DEPLOY_MODE_END - DEPLOY_MODE_START))")
     done
 fi
 
@@ -678,13 +1375,24 @@ fi
 if [ "$RUN_MCP_TESTS" = "true" ]; then
     log_header "MCP Tool Protection Tests"
     
+    MCP_START=$(date +%s)
+    
     # Set default MCP_SERVER_URL if not set
     export MCP_SERVER_URL="${MCP_SERVER_URL:-https://mcp.deepwiki.com/mcp}"
     
     for integration_mode in "${INTEGRATION_MODES_TO_TEST[@]}"; do
-        test_mcp_protection "$integration_mode"
+        test_mcp_protection "$integration_mode" || true
     done
+    
+    MCP_END=$(date +%s)
+    DEPLOY_MODE_TIMES+=("mcp:$((MCP_END - MCP_START))")
 fi
+
+# Calculate total time
+TOTAL_END_TIME=$(date +%s)
+TOTAL_DURATION=$((TOTAL_END_TIME - TOTAL_START_TIME))
+TOTAL_DURATION_MIN=$((TOTAL_DURATION / 60))
+TOTAL_DURATION_SEC=$((TOTAL_DURATION % 60))
 
 # Summary
 log_header "Test Summary"
@@ -694,15 +1402,31 @@ echo -e "  ${RED}Failed${NC}:  $TESTS_FAILED"
 echo -e "  ${YELLOW}Skipped${NC}: $TESTS_SKIPPED"
 echo ""
 
+# Timing breakdown
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}  Timing Breakdown:${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+for time_entry in "${DEPLOY_MODE_TIMES[@]}"; do
+    mode_name="${time_entry%%:*}"
+    mode_secs="${time_entry##*:}"
+    mode_min=$((mode_secs / 60))
+    mode_sec=$((mode_secs % 60))
+    printf "  %-20s %dm %ds\n" "$mode_name:" "$mode_min" "$mode_sec"
+done
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "  ${BOLD}Total Runtime:       ${TOTAL_DURATION_MIN}m ${TOTAL_DURATION_SEC}s${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
 TOTAL=$((TESTS_PASSED + TESTS_FAILED))
 if [ $TESTS_FAILED -eq 0 ] && [ $TOTAL -gt 0 ]; then
     echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}${BOLD}  ✓ ALL TESTS PASSED ($TESTS_PASSED/$TOTAL)${NC}"
+    echo -e "${GREEN}${BOLD}  ✓ ALL TESTS PASSED ($TESTS_PASSED/$TOTAL) in ${TOTAL_DURATION_MIN}m ${TOTAL_DURATION_SEC}s${NC}"
     echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
     exit 0
 else
     echo -e "${RED}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${RED}${BOLD}  ✗ TESTS FAILED ($TESTS_FAILED/$TOTAL failed)${NC}"
+    echo -e "${RED}${BOLD}  ✗ TESTS FAILED ($TESTS_FAILED/$TOTAL failed) in ${TOTAL_DURATION_MIN}m ${TOTAL_DURATION_SEC}s${NC}"
     echo -e "${RED}${BOLD}═══════════════════════════════════════════════════════════════${NC}"
     echo ""
     echo "  Logs available at: $LOG_DIR/"

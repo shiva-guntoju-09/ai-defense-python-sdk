@@ -1,6 +1,57 @@
 # agentsec Examples
 
+**agentsec** accelerates your integration with **Cisco AI Defense** when building AI applications using:
+
+- **Chat Completions** - Direct LLM calls (OpenAI, Azure, Bedrock, Vertex AI)
+- **Agentic Frameworks** - LangChain, LangGraph, CrewAI, AutoGen, Strands, OpenAI Agents SDK
+- **Agentic Runtimes (PaaS)** - AWS Bedrock AgentCore, GCP Vertex AI Agent Engine, Microsoft Azure AI Foundry
+
+### How It Works
+
+agentsec uses **dynamic code modification**  to automatically intercept LLM and MCP tool calls, routing traffic through:
+
+| Integration Mode | Description |
+|------------------|-------------|
+| **Cisco AI Defense Gateway** | Routes all LLM traffic through a secure proxy for centralized policy enforcement |
+| **Cisco AI Defense API** | Inspects requests/responses via API calls while connecting directly to LLM providers |
+
+With just **few lines of code**, your existing AI application gains enterprise-grade security:
+
+```python
+from aidefense.runtime import agentsec
+agentsec.protect()  
+```
+
+---
+
 Comprehensive examples demonstrating how to secure AI agents with **Cisco AI Defense** using the `aidefense.runtime.agentsec` module.
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Overview](#overview)
+- [Core Concepts](#core-concepts)
+- [Integration Pattern](#integration-pattern)
+- [Directory Structure](#directory-structure)
+- [1. Simple Examples](#1-simple-examples)
+- [2. Agent Frameworks](#2-agent-frameworks)
+- [3. Agent Runtimes](#3-agent-runtimes)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## Prerequisites
+
+| Requirement | Version | Installation |
+|-------------|---------|--------------|
+| Python | 3.10+ | [python.org](https://www.python.org/downloads/) |
+| Poetry | 1.5+ | `curl -sSL https://install.python-poetry.org \| python3 -` |
+| Git | Any | `brew install git` or [git-scm.com](https://git-scm.com/) |
+
+---
 
 ## Quick Start
 
@@ -17,7 +68,7 @@ cd 2-agent-frameworks/strands-agent && poetry install && ./scripts/run.sh --open
 
 # 4. Run all tests from the repo root
 cd /path/to/ai-defense-python-sdk
-./scripts/run-unit-tests.sh           # 996 unit tests
+./scripts/run-unit-tests.sh           # ~1010 unit tests
 ./scripts/run-integration-tests.sh    # Full integration tests
 ```
 
@@ -29,7 +80,7 @@ cd /path/to/ai-defense-python-sdk
 |----------|-------------|----------|
 | **1-simple/** | Standalone examples for core features | 7 examples |
 | **2-agent-frameworks/** | Agent frameworks with MCP tools | 6 frameworks |
-| **3-agent-runtimes/** | Cloud deployment with AI Defense | 2 runtimes, 6 modes |
+| **3-agent-runtimes/** | Cloud deployment with AI Defense | 3 runtimes, 9 modes |
 
 ---
 
@@ -61,7 +112,14 @@ agentsec automatically patches these LLM client libraries:
 | **AWS Bedrock** | `boto3` | `converse()`, `converse_stream()` |
 | **Google Vertex AI** | `google-cloud-aiplatform` | `ChatVertexAI`, `generate_content()` |
 | **Google GenAI** | `google-genai` | `generate_content()`, `generate_content_async()` |
-| **MCP** | `mcp` | `ClientSession.call_tool()`, `get_prompt()`, `read_resource()` |
+
+### MCP Tool Inspection
+
+agentsec also patches the MCP (Model Context Protocol) client for tool call inspection:
+
+| Package | Patched Methods |
+|---------|-----------------|
+| `mcp` | `ClientSession.call_tool()`, `get_prompt()`, `read_resource()` |
 
 ### Protection Coverage
 
@@ -79,23 +137,106 @@ agentsec inspects both **requests** (user prompts) and **responses** (LLM output
 | Mode | Behavior | Use Case |
 |------|----------|----------|
 | `off` | No inspection | Disabled |
-| `on_monitor` | Inspect & log, never block | Testing, observability |
-| `on_enforce` | Inspect & block violations | Production |
+| `monitor` | Inspect & log, never block | Testing, observability |
+| `enforce` | Inspect & block violations | Production |
 
 Set via environment variable:
 ```bash
-AGENTSEC_API_MODE_LLM=on_enforce   # or "on_monitor", "off"
-AGENTSEC_API_MODE_MCP=on_enforce   # MCP tool inspection mode
+AGENTSEC_API_MODE_LLM=enforce   # or "monitor", "off"
+AGENTSEC_API_MODE_MCP=enforce   # MCP tool inspection mode
 ```
+
+### Integration Mode Prerequisites
+
+These prerequisites apply to both **Agent Frameworks** and **Agent Runtimes**.
+
+#### API Mode Prerequisites
+
+| Component | Required | Configuration |
+|-----------|:--------:|---------------|
+| **Cisco AI Defense API** | Yes | `AI_DEFENSE_API_MODE_LLM_ENDPOINT`, `AI_DEFENSE_API_MODE_LLM_API_KEY` |
+| **OpenAI** | If using | `OPENAI_API_KEY` |
+| **Azure OpenAI** | If using | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY` |
+| **AWS Bedrock** | If using | AWS credentials (profile, SSO, or env vars) |
+| **Vertex AI** | If using | GCP ADC (`gcloud auth application-default login`) |
+
+#### Gateway Mode Prerequisites
+
+| Provider | Cisco AI Defense Gateway | Auth |
+|----------|--------------------------|------|
+| **OpenAI** | `AGENTSEC_OPENAI_GATEWAY_URL` | `AGENTSEC_OPENAI_GATEWAY_API_KEY` |
+| **Azure OpenAI** | `AGENTSEC_AZURE_OPENAI_GATEWAY_URL` | `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` |
+| **AWS Bedrock** | `AGENTSEC_BEDROCK_GATEWAY_URL` | AWS Sig V4 (no API key) |
+| **Vertex AI** | `AGENTSEC_VERTEXAI_GATEWAY_URL` | ADC OAuth2 (no API key) |
+
+---
+
+## Integration Pattern
+
+The standard pattern for integrating agentsec:
+
+```python
+# 1. Load environment variables FIRST
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+# 2. Import and enable protection BEFORE importing LLM clients
+from aidefense.runtime import agentsec
+agentsec.protect(
+    api_mode_llm="enforce",     # LLM inspection mode
+    api_mode_mcp="enforce",     # MCP tool inspection mode
+)
+
+# 3. Import and use LLM clients normally - they're now protected
+from openai import OpenAI
+client = OpenAI()
+
+# 4. All calls are inspected by AI Defense
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+```
+
+### Gateway Mode Pattern
+
+```python
+from aidefense.runtime import agentsec
+agentsec.protect(
+    llm_integration_mode="gateway",   # Use gateway instead of API
+    mcp_integration_mode="gateway",   # MCP through gateway too
+)
+```
+
+### Skip Inspection Pattern
+
+```python
+from aidefense.runtime.agentsec import skip_inspection, no_inspection
+
+# Context manager - skip specific calls
+with skip_inspection():
+    response = client.chat.completions.create(...)
+
+# Decorator - skip entire function
+@no_inspection()
+def my_function():
+    response = client.chat.completions.create(...)
+```
+
+**Key Rule**: Always call `agentsec.protect()` **before** importing LLM client libraries.
 
 ---
 
 ## Directory Structure
 
+<details>
+<summary>Click to expand project layout</summary>
+
 ```
 ai-defense-python-sdk/
 ├── scripts/
-│   ├── run-unit-tests.sh           # Run all 996 unit tests
+│   ├── run-unit-tests.sh           # Run all unit tests
 │   └── run-integration-tests.sh    # Run integration tests
 │
 └── examples/agentsec/
@@ -111,8 +252,6 @@ ai-defense-python-sdk/
     │   ├── skip_inspection_example.py  # Per-call exclusion
     │   ├── simple_strands_bedrock.py   # Strands + Bedrock
     │   └── tests/
-    │       ├── unit/               # Unit tests
-    │       └── integration/        # Integration tests
     │
     ├── 2-agent-frameworks/         # Agent framework examples
     │   ├── strands-agent/          # AWS Strands SDK
@@ -124,23 +263,20 @@ ai-defense-python-sdk/
     │   └── _shared/                # Shared provider configs & tests
     │
     └── 3-agent-runtimes/           # Cloud runtime examples
-        ├── amazon-bedrock-agentcore/   # AWS AgentCore
-        │   ├── direct-deploy/      # Direct code (boto3 SDK)
-        │   ├── container-deploy/   # Docker container
-        │   ├── lambda-deploy/      # AWS Lambda
-        │   └── tests/              # Unit & integration tests
-        └── gcp-vertex-ai-agent-engine/ # GCP Vertex AI
-            ├── agent-engine-deploy/    # Managed Agent Engine
-            ├── cloud-run-deploy/       # Cloud Run
-            ├── gke-deploy/             # GKE Kubernetes
-            └── tests/              # Unit & integration tests
+        ├── amazon-bedrock-agentcore/
+        ├── gcp-vertex-ai-agent-engine/
+        └── microsoft-foundry/
 ```
+
+</details>
 
 ---
 
 ## 1. Simple Examples
 
 Standalone examples demonstrating core agentsec features without agent frameworks.
+
+> **Prerequisites**: See [Integration Mode Prerequisites](#integration-mode-prerequisites) for API/Gateway configuration.
 
 | Example | Description | Request | Response |
 |---------|-------------|:-------:|:--------:|
@@ -178,16 +314,18 @@ cd /path/to/ai-defense-python-sdk
 
 Agent framework examples with MCP tool support and multi-provider configuration.
 
+> **Prerequisites**: See [Integration Mode Prerequisites](#integration-mode-prerequisites) for API/Gateway configuration.
+
 ### Supported Frameworks
 
-| Framework | Package | Description |
-|-----------|---------|-------------|
-| **Strands** | `strands-agents` | AWS Strands SDK with native tool support |
-| **LangGraph** | `langgraph` | LangChain's state graph pattern |
-| **LangChain** | `langchain` | LCEL chains with tool calling |
-| **CrewAI** | `crewai` | Multi-agent crew orchestration |
-| **AutoGen** | `ag2` | Microsoft's multi-agent framework |
-| **OpenAI Agents** | `openai` | OpenAI's native agent SDK |
+| Framework | Package | Framework Prerequisites |
+|-----------|---------|------------------------|
+| **Strands** | `strands-agents` | Poetry |
+| **LangGraph** | `langgraph` | Poetry |
+| **LangChain** | `langchain` | Poetry |
+| **CrewAI** | `crewai` | Poetry |
+| **AutoGen** | `ag2` | Poetry |
+| **OpenAI Agents** | `openai` | Poetry |
 
 ### Provider Support
 
@@ -234,47 +372,50 @@ All agent frameworks support both request and response inspection:
 
 Cloud deployment examples with full AI Defense protection.
 
+> **AI Defense Prerequisites**: In addition to the deploy prerequisites below, see [Integration Mode Prerequisites](#integration-mode-prerequisites) for API/Gateway configuration.
+
+### Test Modes
+
+All agent runtimes support two test modes:
+
+| Mode | Flag | What It Tests | Cloud Required |
+|------|------|---------------|----------------|
+| **Local** | `--local` | Agent code directly with LLM provider | LLM credentials only |
+| **Deploy** | `--deploy` | Full cloud deployment and endpoints | Cloud infrastructure |
+
 ### AWS Bedrock AgentCore
 
 Three deployment modes for AWS AgentCore agents:
 
-| Mode | Description | Protection | Request | Response |
-|------|-------------|------------|:-------:|:--------:|
-| **Direct Deploy** | Agent runs in AgentCore, client calls via boto3 SDK | Client-side | ✅ | ✅ |
-| **Container Deploy** | Docker container on AgentCore | Server-side | ✅ | ✅ |
-| **Lambda Deploy** | AWS Lambda function | Server-side | ✅ | ✅ |
-
-> **Note**: Direct Deploy uses the **boto3 SDK directly** (not the AgentCore CLI) to ensure full response inspection. The CLI bypasses the patched client path for responses.
+| Mode | Description | Local Prerequisites | Deploy Prerequisites |
+|------|-------------|---------------------|---------------------|
+| **Direct Deploy** | Agent with Bedrock | AWS Bedrock credentials | AWS CLI, AgentCore CLI |
+| **Container Deploy** | Docker container | AWS Bedrock credentials | Docker, ECR permissions |
+| **Lambda Deploy** | AWS Lambda function | AWS Bedrock credentials | Lambda/ECR permissions |
 
 ```bash
 cd 3-agent-runtimes/amazon-bedrock-agentcore
 poetry install
 
-# Direct Deploy (boto3 SDK)
-./direct-deploy/scripts/deploy.sh
-poetry run python direct-deploy/test_with_protection.py "What is 5+5?"
+# Run LOCAL tests (default) - no AWS deployment needed
+./tests/integration/test-all-modes.sh              # All modes, local
+./tests/integration/test-all-modes.sh --local      # Explicit local mode
+./tests/integration/test-all-modes.sh --api        # API mode only, local
 
-# Container Deploy
-./container-deploy/scripts/deploy.sh
-./container-deploy/scripts/invoke.sh "What is 5+5?"
-
-# Lambda Deploy
-./lambda-deploy/scripts/deploy.sh
-./lambda-deploy/scripts/invoke.sh "What is 5+5?"
-
-# Run all integration tests (6 tests: 3 deploy modes x 2 integration modes)
-./tests/integration/test-all-modes.sh --verbose
+# Run DEPLOY tests - deploys to AWS and tests real endpoints
+./tests/integration/test-all-modes.sh --deploy     # All modes, deploy to AWS
+./tests/integration/test-all-modes.sh --deploy direct --api  # Direct deploy, API only
 ```
 
 ### GCP Vertex AI Agent Engine
 
 Three deployment modes for GCP Vertex AI agents:
 
-| Mode | Description | Protection | Request | Response |
-|------|-------------|------------|:-------:|:--------:|
-| **Agent Engine** | Google's managed agent service | Server-side | ✅ | ✅ |
-| **Cloud Run** | Serverless containers | Server-side | ✅ | ✅ |
-| **GKE** | Kubernetes deployment | Server-side | ✅ | ✅ |
+| Mode | Description | Local Prerequisites | Deploy Prerequisites |
+|------|-------------|---------------------|---------------------|
+| **Agent Engine** | Google's managed agent service | GCP ADC credentials | gcloud CLI, Vertex AI permissions |
+| **Cloud Run** | Serverless containers | GCP ADC credentials | Docker, Cloud Run permissions |
+| **GKE** | Kubernetes deployment | GCP ADC credentials | Docker, kubectl, GKE permissions |
 
 **Supported Google AI SDKs:**
 
@@ -290,35 +431,62 @@ poetry install
 # Choose SDK (optional, defaults to vertexai)
 export GOOGLE_AI_SDK=google_genai  # Use modern SDK
 
-# Agent Engine (local test)
-./agent-engine-deploy/scripts/deploy.sh test
+# Run LOCAL tests (default) - no GCP deployment needed
+./tests/integration/test-all-modes.sh              # All modes, local
+./tests/integration/test-all-modes.sh --local      # Explicit local mode
+./tests/integration/test-all-modes.sh --api        # API mode only, local
 
-# Cloud Run (deploy to GCP)
-./cloud-run-deploy/scripts/deploy.sh
-./cloud-run-deploy/scripts/invoke.sh "Check service health"
-./cloud-run-deploy/scripts/cleanup.sh  # Clean up
+# Run DEPLOY tests - deploys to GCP and tests real endpoints
+./tests/integration/test-all-modes.sh --deploy     # All modes, deploy to GCP
+./tests/integration/test-all-modes.sh --deploy --mode cloud-run  # Cloud Run only
+./tests/integration/test-all-modes.sh --deploy --cleanup  # Deploy, test, and cleanup
+```
 
-# GKE (deploy to GCP)
-./gke-deploy/scripts/deploy.sh setup   # First time: create cluster
-./gke-deploy/scripts/deploy.sh
-./gke-deploy/scripts/invoke.sh "Check service health"
-./gke-deploy/scripts/cleanup.sh        # Clean up
+### Microsoft Azure AI Foundry
 
-# Run all integration tests (6 tests: 3 deploy modes x 2 integration modes)
-./tests/integration/test-all-modes.sh --verbose
+Three deployment modes for Microsoft Azure AI Foundry agents:
+
+| Mode | Description | Local Prerequisites | Deploy Prerequisites |
+|------|-------------|---------------------|---------------------|
+| **Foundry Agent App** | Azure AI Foundry managed endpoint | Azure OpenAI credentials | Azure CLI, ML extension |
+| **Azure Functions** | Serverless functions | Azure OpenAI credentials | Functions Core Tools |
+| **Foundry Container** | Container deployment | Azure OpenAI credentials | Docker, ACR permissions |
+
+```bash
+cd 3-agent-runtimes/microsoft-foundry
+poetry install
+
+# Run LOCAL tests (default) - no Azure deployment needed
+./tests/integration/test-all-modes.sh              # All modes, local
+./tests/integration/test-all-modes.sh --local      # Explicit local mode
+./tests/integration/test-all-modes.sh --api        # API mode only, local
+
+# Run DEPLOY tests - deploys to Azure and tests real endpoints
+./tests/integration/test-all-modes.sh --deploy     # All modes, deploy to Azure
+./tests/integration/test-all-modes.sh --deploy agent-app --api  # Agent app, API only
 ```
 
 ### Runtime Integration Tests
 
 ```bash
-# Run from repo root
-cd /path/to/ai-defense-python-sdk
+# Run from the 3-agent-runtimes directory
+cd examples/agentsec/3-agent-runtimes
 
-# Run all runtime tests (24 total: 8 per runtime x 2 modes + MCP)
-./scripts/run-integration-tests.sh --runtimes                      # All runtimes, all modes
-./scripts/run-integration-tests.sh amazon-bedrock-agentcore        # Specific runtime
-./scripts/run-integration-tests.sh gcp-vertex-ai-agent-engine      # Specific runtime
-./scripts/run-integration-tests.sh amazon-bedrock-agentcore --gateway  # Specific mode
+# Default mode: --deploy for AWS/GCP, --local for Azure
+./run-all-integration-tests.sh                     # Default test mode
+
+# Run LOCAL tests for all runtimes (no cloud deployment)
+./run-all-integration-tests.sh --local             # All runtimes, local mode
+
+# Run DEPLOY tests for all runtimes (deploys to cloud)
+./run-all-integration-tests.sh --deploy            # All runtimes, deploy mode
+
+# Run specific runtime
+./run-all-integration-tests.sh amazon-bedrock-agentcore        # AgentCore only
+./run-all-integration-tests.sh --local microsoft-foundry       # Foundry, local mode
+
+# Quick mode (API mode only, 1 test per runtime)
+./run-all-integration-tests.sh --quick             # Quick tests for all runtimes
 ```
 
 ---
@@ -337,8 +505,8 @@ Copy `.env.example` to `.env` and configure:
 | `AI_DEFENSE_API_MODE_LLM_API_KEY` | Yes | AI Defense API key for LLM inspection |
 | `AI_DEFENSE_API_MODE_MCP_ENDPOINT` | For MCP | AI Defense API endpoint for MCP inspection |
 | `AI_DEFENSE_API_MODE_MCP_API_KEY` | For MCP | AI Defense API key for MCP inspection |
-| `AGENTSEC_API_MODE_LLM` | No | LLM mode: `on_enforce`, `on_monitor`, `off` (default: `on_monitor`) |
-| `AGENTSEC_API_MODE_MCP` | No | MCP mode: `on_enforce`, `on_monitor`, `off` (default: `on_monitor`) |
+| `AGENTSEC_API_MODE_LLM` | No | LLM mode: `enforce`, `monitor`, `off` (default: `monitor`) |
+| `AGENTSEC_API_MODE_MCP` | No | MCP mode: `enforce`, `monitor`, `off` (default: `monitor`) |
 | `AGENTSEC_LLM_INTEGRATION_MODE` | No | LLM integration: `api`, `gateway` (default: `api`) |
 | `AGENTSEC_MCP_INTEGRATION_MODE` | No | MCP integration: `api`, `gateway` (default: `api`) |
 
@@ -446,14 +614,20 @@ Select config via flag:
 | **Core SDK** | Unit | ~600 | Patching, inspection, decisions, config |
 | **Simple Examples** | Unit | ~70 | Example file structure, syntax |
 | **Simple Examples** | Integration | 14 | 7 examples x 2 modes (API + Gateway) |
-| **Agent Frameworks** | Unit | ~200 | Agent setup, provider configs |
-| **Agent Frameworks** | Integration | 48 | 6 frameworks x 4 providers x 2 modes |
+| **Agent Frameworks** | Unit | ~180 | Agent setup, provider configs |
+| **Agent Frameworks** | Integration | ~40 | 6 frameworks x (2-4 providers) x 2 modes* |
 | **AgentCore** | Unit | ~60 | Deploy scripts, protection setup |
-| **AgentCore** | Integration | 8 | 4 deploy modes x 2 integration modes |
+| **AgentCore** | Integration | 8 | (3 deploy x 2 modes) + 2 MCP tests |
 | **Vertex AI** | Unit | ~50 | Deploy scripts, SDK selection |
-| **Vertex AI** | Integration | 16 | 4 deploy modes x 2 integration modes x 2 (LLM + MCP) |
+| **Vertex AI** | Integration | 8-16 | (3 deploy x 2 modes) + 2 MCP tests** |
+| **Azure AI Foundry** | Unit | ~50 | Deploy scripts, agent factory, endpoints |
+| **Azure AI Foundry** | Integration | 8 | (3 deploy x 2 modes) + 2 MCP tests |
 
-**Total: 996 unit tests**
+**Total: ~1010 unit tests**
+
+*Provider support varies by framework: OpenAI Agents supports 2 providers (openai, azure), others support 4 (openai, azure, vertex, bedrock)
+
+**Vertex AI counts individual check assertions as passed tests
 
 ### Run Tests
 
@@ -461,7 +635,7 @@ Select config via flag:
 # From project root
 cd /path/to/ai-defense-python-sdk
 
-# All unit tests (996 tests)
+# All unit tests (~1010 tests)
 ./scripts/run-unit-tests.sh
 
 # All integration tests
@@ -480,63 +654,6 @@ cd /path/to/ai-defense-python-sdk
 ./scripts/run-integration-tests.sh strands       # Strands agent only
 ./scripts/run-integration-tests.sh amazon-bedrock-agentcore  # AgentCore only
 ```
-
----
-
-## Integration Pattern
-
-The standard pattern for integrating agentsec:
-
-```python
-# 1. Load environment variables FIRST
-from pathlib import Path
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-# 2. Import and enable protection BEFORE importing LLM clients
-from aidefense.runtime import agentsec
-agentsec.protect(
-    api_mode_llm="on_enforce",     # LLM inspection mode
-    api_mode_mcp="on_enforce",     # MCP tool inspection mode
-)
-
-# 3. Import and use LLM clients normally - they're now protected
-from openai import OpenAI
-client = OpenAI()
-
-# 4. All calls are inspected by AI Defense
-response = client.chat.completions.create(
-    model="gpt-4o-mini",
-    messages=[{"role": "user", "content": "Hello!"}]
-)
-```
-
-### Gateway Mode Pattern
-
-```python
-from aidefense.runtime import agentsec
-agentsec.protect(
-    llm_integration_mode="gateway",   # Use gateway instead of API
-    mcp_integration_mode="gateway",   # MCP through gateway too
-)
-```
-
-### Skip Inspection Pattern
-
-```python
-from aidefense.runtime.agentsec import skip_inspection, no_inspection
-
-# Context manager - skip specific calls
-with skip_inspection():
-    response = client.chat.completions.create(...)
-
-# Decorator - skip entire function
-@no_inspection()
-def my_function():
-    response = client.chat.completions.create(...)
-```
-
-**Key Rule**: Always call `agentsec.protect()` **before** importing LLM client libraries.
 
 ---
 
@@ -560,29 +677,114 @@ def my_function():
 
 ### Debug Logging
 
-Enable detailed logs to see what agentsec is doing:
+By default, agentsec operates quietly (log level `WARNING`). To see what's happening under the hood - including messages sent to AI Defense, responses received, and inspection decisions - enable debug logging.
 
+#### Logging Environment Variables
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `AGENTSEC_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` | `WARNING` | Controls verbosity |
+| `AGENTSEC_LOG_FORMAT` | `text`, `json` | `text` | Output format (use `json` for log aggregators) |
+| `AGENTSEC_LOG_FILE` | file path | None | Optional file to write logs to |
+
+#### How to Enable Debug Logging
+
+**Option 1: Environment variable (recommended)**
 ```bash
 export AGENTSEC_LOG_LEVEL=DEBUG
+python your_agent.py
 ```
 
-You'll see output like:
+**Option 2: In your code (before `agentsec.protect()`)**
+```python
+import os
+os.environ["AGENTSEC_LOG_LEVEL"] = "DEBUG"
 
+import agentsec
+agentsec.protect()
+```
+
+**Option 3: Command line (one-off)**
+```bash
+AGENTSEC_LOG_LEVEL=DEBUG python your_agent.py
+```
+
+#### What You'll See with DEBUG Logging
+
+**1. Patched LLM Call Flow**
 ```
 ╔══════════════════════════════════════════════════════════════
 ║ [PATCHED] LLM CALL: gpt-4o-mini
-║ Operation: OpenAI.chat.completions.create | Mode: on_enforce | Integration: api
+║ Operation: OpenAI.chat.completions.create | LLM Mode: enforce | Integration: api | Provider: openai
 ╚══════════════════════════════════════════════════════════════
-[aidefense.runtime.agentsec.patchers.openai] DEBUG: Request inspection (1 messages)
-[aidefense.runtime.agentsec.inspectors.llm] DEBUG: AI Defense response: {'action': 'allow', ...}
-[aidefense.runtime.agentsec.patchers.openai] DEBUG: Response inspection (response: 42 chars)
+[aidefense.runtime.agentsec] DEBUG: [PATCHED CALL] OpenAI.chat.completions.create - Request inspection (3 messages)
+[aidefense.runtime.agentsec] DEBUG: [PATCHED CALL] OpenAI.chat.completions.create - Request decision: allow
 ```
 
-For MCP tool calls:
+**2. Request Payload Sent to AI Defense**
 ```
-[aidefense.runtime.agentsec.patchers.mcp] INFO: MCP client patched successfully
-[aidefense.runtime.agentsec.inspectors.mcp] DEBUG: MCP Request inspection executed
-[aidefense.runtime.agentsec.inspectors.mcp] DEBUG: MCP Response inspection executed
+[aidefense.runtime.agentsec] DEBUG: AI Defense request: 3 messages, metadata=['user', 'src_app', 'transaction_id']
+[aidefense.runtime.agentsec] DEBUG: AI Defense request payload: {
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello, how are you?"}
+  ],
+  "metadata": {"user": "test-user", "src_app": "my-agent"}
+}
+```
+
+**3. AI Defense Response**
+```
+[aidefense.runtime.agentsec] DEBUG: AI Defense response: {
+  "action": "allow",
+  "reasons": [],
+  "sanitized_content": null
+}
+```
+
+**4. Response Inspection**
+```
+[aidefense.runtime.agentsec] DEBUG: [PATCHED CALL] OpenAI.chat.completions.create - Response inspection (response: 142 chars)
+[aidefense.runtime.agentsec] DEBUG: [PATCHED CALL] OpenAI.chat.completions.create - Response decision: allow
+[aidefense.runtime.agentsec] DEBUG: [PATCHED CALL] OpenAI.chat.completions.create - complete
+```
+
+**5. Gateway Mode (if using)**
+```
+[aidefense.runtime.agentsec] DEBUG: [GATEWAY] Sending request to openai gateway: https://gateway.example.com/v1/chat/completions
+[aidefense.runtime.agentsec] DEBUG: [GATEWAY] Received response from openai gateway
+```
+
+**6. MCP Tool Call Inspection**
+```
+[aidefense.runtime.agentsec] DEBUG: [PATCHED CALL] MCP.call_tool(fetch_url) - Request inspection
+[aidefense.runtime.agentsec] DEBUG: [PATCHED CALL] MCP.call_tool(fetch_url) - Request decision: allow
+[aidefense.runtime.agentsec] DEBUG: [PATCHED CALL] MCP.call_tool(fetch_url) - Response inspection
+[aidefense.runtime.agentsec] DEBUG: [PATCHED CALL] MCP.call_tool(fetch_url) - Response decision: allow
+```
+
+**7. Block Decision (when content violates policy)**
+```
+[aidefense.runtime.agentsec] DEBUG: AI Defense BLOCK response: {
+  "action": "block",
+  "reasons": ["prompt_injection_detected"],
+  "sanitized_content": null
+}
+[aidefense.runtime.agentsec] WARNING: [BLOCKED] Content blocked by AI Defense: prompt_injection_detected
+```
+
+#### JSON Log Format
+
+For production environments or log aggregation systems, use JSON format:
+
+```bash
+export AGENTSEC_LOG_LEVEL=DEBUG
+export AGENTSEC_LOG_FORMAT=json
+```
+
+Output:
+```json
+{"timestamp": "2025-01-24T10:30:45.123Z", "level": "DEBUG", "logger": "aidefense.runtime.agentsec", "message": "AI Defense response: {'action': 'allow'}"}
 ```
 
 ### Getting Help

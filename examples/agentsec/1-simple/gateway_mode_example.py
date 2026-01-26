@@ -43,10 +43,10 @@ def example_api_mode_programmatic():
     from aidefense.runtime import agentsec
     
     agentsec.protect(
-        api_mode_llm="on_enforce",  # Block policy violations
+        api_mode_llm="enforce",  # Block policy violations
         api_mode_llm_endpoint="https://preview.api.inspect.aidefense.aiteam.cisco.com/api",
         api_mode_llm_api_key="your-api-key",
-        api_mode_mcp="on_monitor",  # Log but don't block
+        api_mode_mcp="monitor",  # Log but don't block
         # MCP falls back to LLM endpoint/key if not specified
         auto_dotenv=False,
     )
@@ -61,10 +61,10 @@ def example_api_mode_separate_mcp():
     from aidefense.runtime import agentsec
     
     agentsec.protect(
-        api_mode_llm="on_enforce",
+        api_mode_llm="enforce",
         api_mode_llm_endpoint="https://preview.api.inspect.aidefense.aiteam.cisco.com/api",
         api_mode_llm_api_key="your-llm-api-key",
-        api_mode_mcp="on_enforce",
+        api_mode_mcp="enforce",
         api_mode_mcp_endpoint="https://mcp.api.inspect.aidefense.aiteam.cisco.com/api",
         api_mode_mcp_api_key="your-mcp-api-key",
         auto_dotenv=False,
@@ -174,7 +174,7 @@ def example_mixed_mode():
         },
         # MCP: Use API mode with enforcement
         mcp_integration_mode="api",
-        api_mode_mcp="on_enforce",  # Block policy violations via API inspection
+        api_mode_mcp="enforce",  # Block policy violations via API inspection
         auto_dotenv=False,
     )
 
@@ -197,12 +197,12 @@ def main():
     print("Environment variables:")
     print("  AI_DEFENSE_API_MODE_LLM_ENDPOINT=https://preview.api.inspect.aidefense.aiteam.cisco.com/api")
     print("  AI_DEFENSE_API_MODE_LLM_API_KEY=your-key")
-    print("  AGENTSEC_API_MODE_LLM=on_enforce  # or on_monitor, off")
+    print("  AGENTSEC_API_MODE_LLM=enforce  # or monitor, off")
     print()
     print("Programmatic:")
     print("  import agentsec")
     print("  agentsec.protect(")
-    print('      api_mode_llm="on_enforce",')
+    print('      api_mode_llm="enforce",')
     print('      api_mode_llm_endpoint="https://preview.api.inspect.aidefense.aiteam.cisco.com/api",')
     print('      api_mode_llm_api_key="your-key",')
     print("      auto_dotenv=False,")
@@ -246,8 +246,8 @@ def main():
     print("-" * 70)
     print()
     print("API Mode:")
-    print("  api_mode_llm           : 'off', 'on_monitor', or 'on_enforce'")
-    print("  api_mode_mcp           : 'off', 'on_monitor', or 'on_enforce'")
+    print("  api_mode_llm           : 'off', 'monitor', or 'enforce'")
+    print("  api_mode_mcp           : 'off', 'monitor', or 'enforce'")
     print("  api_mode_llm_endpoint  : API endpoint for LLM inspection")
     print("  api_mode_llm_api_key   : API key for LLM inspection")
     print("  api_mode_mcp_endpoint  : API endpoint for MCP (optional, falls back to LLM)")

@@ -241,9 +241,9 @@ class TestMCPIntegration:
 class TestDebugLogging:
     """Tests for debug logging implementation."""
     
-    def test_debug_prefix_used(self, example_code):
-        """Test that [DEBUG] prefix is used for debug messages."""
-        assert '[DEBUG]' in example_code, "Should use [DEBUG] prefix"
+    def test_debug_logging_used(self, example_code):
+        """Test that logger.debug is used for debug messages."""
+        assert 'logger.debug' in example_code, "Should use logger.debug for debug messages"
     
     def test_flush_used(self, example_code):
         """Test that flush=True is used for immediate output."""
@@ -251,12 +251,12 @@ class TestDebugLogging:
     
     def test_debug_messages_exist(self, example_code):
         """Test that debug messages are present in the code."""
-        assert '[DEBUG]' in example_code, "Should have [DEBUG] messages for debugging"
+        assert 'logger.debug' in example_code, "Should have logger.debug messages for debugging"
     
-    def test_debug_on_tool_calls(self, example_code):
-        """Test that debug messages are printed for tool calls."""
-        assert "[TOOL CALL]" in example_code or "[DEBUG] fetch_url" in example_code, \
-            "Should log tool calls"
+    def test_logging_configured(self, example_code):
+        """Test that logging is properly configured."""
+        assert "logging.basicConfig" in example_code or "logging.getLogger" in example_code, \
+            "Should configure logging"
 
 
 # =============================================================================

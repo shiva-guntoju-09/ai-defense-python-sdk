@@ -103,7 +103,7 @@ data:
   project_id: "${GOOGLE_CLOUD_PROJECT}"  # Substituted by deploy.sh
   location: "us-central1"
   agentsec_mode: "api"
-  agentsec_api_mode: "on_monitor"
+  agentsec_api_mode: "monitor"
 
 ---
 # ServiceAccount for Workload Identity

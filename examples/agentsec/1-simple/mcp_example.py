@@ -28,7 +28,7 @@ if env_file.exists():
 
 # Enable protection before importing MCP client
 from aidefense.runtime import agentsec
-agentsec.protect(api_mode_mcp="on_monitor")  # Use monitor mode for this example
+agentsec.protect(api_mode_mcp="monitor")  # Use monitor mode for this example
 
 
 async def main() -> None:

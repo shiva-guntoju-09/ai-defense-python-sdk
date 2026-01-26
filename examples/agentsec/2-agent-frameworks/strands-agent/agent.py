@@ -19,10 +19,18 @@ Usage:
 """
 
 import asyncio
+import logging
 import os
 import sys
 import time
 from pathlib import Path
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+# Configurable timeout from environment
+MCP_TIMEOUT = int(os.getenv("MCP_TIMEOUT", "60"))
 
 # Load shared .env file (before agentsec.protect())
 from dotenv import load_dotenv
@@ -75,7 +83,7 @@ _mcp_url = None
 def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
     """Synchronously call an MCP tool by creating a fresh MCP connection."""
     async def _async_call():
-        async with streamablehttp_client(_mcp_url, timeout=120) as (read, write, _):
+        async with streamablehttp_client(_mcp_url, timeout=MCP_TIMEOUT) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(tool_name, arguments)
@@ -102,25 +110,23 @@ def fetch_url(url: str) -> str:
         The text content of the URL
     """
     global _mcp_url
-    print(f"[DEBUG] fetch_url called: url={url}", flush=True)
+    logger.info(f"fetch_url called: url={url}")
     if _mcp_url is None:
-        print("[DEBUG] MCP URL not set!", flush=True)
+        logger.warning("MCP URL not set")
         return "Error: MCP not configured"
     
     try:
-        print(f"[TOOL CALL] fetch_url(url='{url}')", flush=True)
+        logger.info(f"Calling fetch tool for '{url}'")
         start = time.time()
         
         # Create fresh MCP connection in this thread's event loop
         response_text = _sync_call_mcp_tool('fetch', {'url': url})
         
         elapsed = time.time() - start
-        print(f"[TOOL] Got response ({len(response_text)} chars) in {elapsed:.1f}s", flush=True)
+        logger.info(f"Got response ({len(response_text)} chars) in {elapsed:.1f}s")
         return response_text
     except Exception as e:
-        print(f"[TOOL ERROR] {type(e).__name__}: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Tool error: {type(e).__name__}: {e}")
         return f"Error: {e}"
 
 
@@ -132,7 +138,7 @@ async def run_agent(initial_message: str = None):
     """Run the Strands Agent with MCP tools."""
     global _mcp_session, _mcp_url
     
-    print("[DEBUG] run_agent started", flush=True)
+    logger.debug("run_agent started")
     
     # Load configuration and create provider
     try:
@@ -166,38 +172,38 @@ async def run_agent(initial_message: str = None):
     # Store MCP URL for sync tool access from other threads
     _mcp_url = mcp_url
     
-    print(f"[DEBUG] MCP URL: {mcp_url}", flush=True)
-    print(f"[DEBUG] Model ID: {model_id}", flush=True)
+    logger.debug(f"MCP URL: {mcp_url}")
+    logger.debug(f"Model ID: {model_id}")
     
     # Connect to MCP if URL configured
     mcp_context = None
     session_context = None
     
     if mcp_url:
-        print(f"[mcp] Connecting to {mcp_url}...", flush=True)
+        logger.info(f"Connecting to MCP server: {mcp_url}")
         try:
-            mcp_context = streamablehttp_client(mcp_url, timeout=60)
-            print("[DEBUG] MCP context created", flush=True)
+            mcp_context = streamablehttp_client(mcp_url, timeout=MCP_TIMEOUT)
+            logger.debug("MCP context created")
             read, write, _ = await mcp_context.__aenter__()
-            print("[DEBUG] MCP context entered", flush=True)
+            logger.debug("MCP context entered")
             session_context = ClientSession(read, write)
             _mcp_session = await session_context.__aenter__()
-            print("[DEBUG] MCP session created", flush=True)
+            logger.debug("MCP session created")
             await _mcp_session.initialize()
-            print("[DEBUG] MCP session initialized", flush=True)
+            logger.debug("MCP session initialized")
             tools_list = await _mcp_session.list_tools()
-            print(f"[mcp] Connected! Tools: {[t.name for t in tools_list.tools]}", flush=True)
+            logger.info(f"MCP connected. Tools: {[t.name for t in tools_list.tools]}")
         except Exception as e:
-            print(f"[mcp] Connection failed: {e}", flush=True)
+            logger.warning(f"MCP connection failed: {e}")
             _mcp_session = None
     
     # Create agent
-    print(f"[agent] Creating with model: {model_id}", flush=True)
+    logger.info(f"Creating agent with model: {model_id}")
     
     # Use fetch_url tool (MCP_SERVER_URL points to fetch server)
     # Always register tools if MCP URL is configured (tool calls create their own connections)
     tools = [fetch_url] if mcp_url else []
-    print(f"[DEBUG] MCP URL: {mcp_url}, Tools: {[t.__name__ if hasattr(t, '__name__') else str(t) for t in tools]}", flush=True)
+    logger.debug(f"MCP URL: {mcp_url}, Tools: {[t.__name__ if hasattr(t, '__name__') else str(t) for t in tools]}")
     
     # System prompt for fetch tool
     system_prompt = """You are a helpful assistant with access to the fetch_url tool.
@@ -213,13 +219,13 @@ The fetch_url tool accepts a URL parameter: fetch_url(url='https://example.com')
 Always use the tool to get actual content rather than guessing what a page contains.
 """
     
-    print("[DEBUG] Creating Agent instance...", flush=True)
+    logger.debug("Creating Agent instance")
     agent = Agent(
         model=model,
         system_prompt=system_prompt,
         tools=tools,
     )
-    print("[DEBUG] Agent instance created", flush=True)
+    logger.debug("Agent instance created")
     
     print("\n" + "=" * 60, flush=True)
     print("  Strands Agent + agentsec + MCP", flush=True)
@@ -230,11 +236,11 @@ Always use the tool to get actual content rather than guessing what a page conta
     if initial_message:
         print(f"\nYou: {initial_message}", flush=True)
         try:
-            print("[DEBUG] Calling agent()...", flush=True)
+            logger.debug("Calling agent()")
             start = time.time()
             response = agent(initial_message)
             elapsed = time.time() - start
-            print(f"[DEBUG] agent() returned in {elapsed:.1f}s", flush=True)
+            logger.debug(f"agent() returned in {elapsed:.1f}s")
             print(f"\nAgent: {response}", flush=True)
         except SecurityPolicyError as e:
             print(f"\n[BLOCKED] {e.decision.action}: {e.decision.reasons}", flush=True)
@@ -259,7 +265,7 @@ Always use the tool to get actual content rather than guessing what a page conta
             
             print("\nAgent: ", end="", flush=True)
             try:
-                print("[DEBUG] Calling agent()...", flush=True)
+                logger.debug("Calling agent()")
                 response = agent(user_input)
                 print(response, flush=True)
             except SecurityPolicyError as e:
@@ -275,17 +281,17 @@ Always use the tool to get actual content rather than guessing what a page conta
         if session_context:
             await session_context.__aexit__(None, None, None)
     except Exception as e:
-        print(f"[DEBUG] MCP session cleanup: {type(e).__name__}", flush=True)
+        logger.debug(f"MCP session cleanup: {type(e).__name__}")
     try:
         if mcp_context:
             await mcp_context.__aexit__(None, None, None)
     except Exception as e:
-        print(f"[DEBUG] MCP context cleanup: {type(e).__name__}", flush=True)
+        logger.debug(f"MCP context cleanup: {type(e).__name__}")
 
 
 def main():
     """Entry point."""
-    print("[DEBUG] main() started", flush=True)
+    logger.debug("main() started")
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
     
@@ -299,19 +305,19 @@ def main():
     
     # Get initial message from command line if provided
     initial_message = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
-    print(f"[DEBUG] Initial message: {initial_message}", flush=True)
+    logger.debug(f"Initial message: {initial_message}")
     
     loop = asyncio.new_event_loop()
     loop.set_exception_handler(exception_handler)
     try:
-        print("[DEBUG] Starting event loop...", flush=True)
+        logger.debug("Starting event loop")
         loop.run_until_complete(run_agent(initial_message))
     finally:
         # Suppress shutdown errors
         try:
             loop.run_until_complete(loop.shutdown_asyncgens())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error during async generator shutdown: {e}")
         loop.close()
 
 

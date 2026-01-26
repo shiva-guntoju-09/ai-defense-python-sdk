@@ -6,16 +6,23 @@
 # Tests all deployment modes (direct, container, lambda) in BOTH
 # Cisco AI Defense integration modes (API + Gateway).
 # 
+# Test Modes:
+#   --local:  Run local tests only (no cloud deployment)
+#   --deploy: Deploy to cloud and test real endpoints
+#   Default:  --deploy for AgentCore/VertexAI, --local for Microsoft Foundry
+# 
 # Full test = 3 deploy modes x 2 integration modes = 6 tests per runtime
 # 
 # Usage:
-#   ./run-all-integration-tests.sh           # Run all runtimes, all modes (6 tests)
-#   ./run-all-integration-tests.sh --quick   # Quick: direct deploy, API mode only (1 test)
-#   ./run-all-integration-tests.sh --verbose # Verbose output
+#   ./run-all-integration-tests.sh             # Default (deploy AWS/GCP, local Azure)
+#   ./run-all-integration-tests.sh --local     # Run local tests for all runtimes
+#   ./run-all-integration-tests.sh --deploy    # Deploy and test all runtimes
+#   ./run-all-integration-tests.sh --quick     # Quick: API mode only (1 test)
+#   ./run-all-integration-tests.sh --verbose   # Verbose output
 #   ./run-all-integration-tests.sh amazon-bedrock-agentcore  # Run specific runtime
 # =============================================================================
 
-set -o pipefail
+set -euo pipefail
 
 # Colors
 RED='\033[0;31m'
@@ -30,7 +37,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # All agent runtimes
-ALL_RUNTIMES=("amazon-bedrock-agentcore" "gcp-vertex-ai-agent-engine")
+ALL_RUNTIMES=("amazon-bedrock-agentcore" "gcp-vertex-ai-agent-engine" "microsoft-foundry")
 
 # Test counts per runtime (function to get count - works in bash and zsh)
 # Full test = 3 deploy modes x 2 integration modes = 6 tests
@@ -38,12 +45,17 @@ get_mode_count() {
     case "$1" in
         amazon-bedrock-agentcore) echo 6 ;;  # 3 deploy (direct, container, lambda) x 2 integration (api, gateway)
         gcp-vertex-ai-agent-engine) echo 6 ;;  # 3 deploy (agent-engine, cloud-run, gke) x 2 integration (api, gateway)
+        microsoft-foundry) echo 6 ;;  # 3 deploy (agent-app, azure-functions, container) x 2 integration (api, gateway)
         *) echo 1 ;;
     esac
 }
 
 # Estimated time per mode (seconds)
 EST_TIME_PER_MODE=60
+
+# Test mode: "default", "local", or "deploy"
+# default = --deploy for AgentCore/VertexAI, --local for Foundry
+TEST_MODE="default"
 
 # Parse arguments
 VERBOSE=""
@@ -56,28 +68,46 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS] [RUNTIMES...]"
             echo ""
             echo "Options:"
+            echo "  --local          Run LOCAL tests for all runtimes (no cloud deployment)"
+            echo "  --deploy         Run DEPLOY tests for all runtimes (deploy to cloud)"
             echo "  --verbose, -v    Show detailed output"
-            echo "  --quick, -q      Quick mode: direct deploy + API mode only (1 test)"
+            echo "  --quick, -q      Quick mode: API mode only (1 test per runtime)"
             echo "  --help, -h       Show this help"
+            echo ""
+            echo "Test Modes:"
+            echo "  Default:   --deploy for AgentCore/VertexAI, --local for Foundry"
+            echo "  --local:   Run local tests only (requires LLM provider credentials)"
+            echo "  --deploy:  Deploy to cloud and test real endpoints"
             echo ""
             echo "Runtimes (default: all):"
             echo "  amazon-bedrock-agentcore     AWS Bedrock AgentCore"
             echo "  gcp-vertex-ai-agent-engine   GCP Vertex AI Agent Engine"
+            echo "  microsoft-foundry            Microsoft Azure AI Foundry"
             echo ""
             echo "Examples:"
-            echo "  $0                              # Run all runtimes, all modes"
-            echo "  $0 --quick                      # Run all runtimes, direct mode only"
+            echo "  $0                              # Default (deploy AWS/GCP, local Azure)"
+            echo "  $0 --local                      # Run local tests for all runtimes"
+            echo "  $0 --deploy                     # Deploy and test all runtimes"
+            echo "  $0 --quick                      # Quick mode, API only"
             echo "  $0 --verbose                    # Verbose output"
             echo "  $0 amazon-bedrock-agentcore     # Run only amazon-bedrock-agentcore"
-            echo "  $0 gcp-vertex-ai-agent-engine   # Run only gcp-vertex-ai-agent-engine"
+            echo "  $0 --local microsoft-foundry    # Run only foundry, local mode"
             exit 0
+            ;;
+        --local)
+            TEST_MODE="local"
+            shift
+            ;;
+        --deploy)
+            TEST_MODE="deploy"
+            shift
             ;;
         --verbose|-v)
             VERBOSE="--verbose"
             shift
             ;;
         --quick|-q)
-            QUICK="direct --api"
+            QUICK="--quick"
             shift
             ;;
         amazon-bedrock-agentcore)
@@ -86,6 +116,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         gcp-vertex-ai-agent-engine)
             RUNTIMES_TO_RUN+=("gcp-vertex-ai-agent-engine")
+            shift
+            ;;
+        microsoft-foundry)
+            RUNTIMES_TO_RUN+=("microsoft-foundry")
             shift
             ;;
         *)
@@ -124,44 +158,95 @@ echo -e "${BOLD}${BLUE}╔══════════════════
 echo -e "${BOLD}${BLUE}║         AGENT RUNTIME INTEGRATION TEST SUITE                     ║${NC}"
 echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${YELLOW}${BOLD}⚠️  WARNING: This will run live integration tests!${NC}"
-echo ""
-echo -e "   These tests make ${BOLD}real API calls${NC} to:"
-echo -e "   • Cisco AI Defense API (API mode)"
-echo -e "   • Cisco AI Defense Gateway (Gateway mode)"
-echo -e "   • AWS Bedrock (via AgentCore)"
-echo -e "   • AWS Lambda (for lambda deploy mode)"
-echo -e "   • GCP Vertex AI (via google-genai)"
-echo -e "   • GCP Cloud Run / GKE (for container modes)"
+
+# Display test mode
+case "$TEST_MODE" in
+    local)
+        echo -e "${BLUE}Test Mode: LOCAL${NC} - Testing locally without cloud deployment"
+        echo ""
+        echo -e "   These tests make ${BOLD}real API calls${NC} to:"
+        echo -e "   • Cisco AI Defense API (API mode)"
+        echo -e "   • Cisco AI Defense Gateway (Gateway mode)"
+        echo -e "   • AWS Bedrock (direct calls)"
+        echo -e "   • GCP Vertex AI (direct calls)"
+        echo -e "   • Azure OpenAI (direct calls)"
+        ;;
+    deploy)
+        echo -e "${YELLOW}${BOLD}⚠️  Test Mode: DEPLOY${NC} - Deploying to cloud and testing real endpoints"
+        echo ""
+        echo -e "   These tests make ${BOLD}real deployments and API calls${NC} to:"
+        echo -e "   • Cisco AI Defense API (API mode)"
+        echo -e "   • Cisco AI Defense Gateway (Gateway mode)"
+        echo -e "   • AWS Bedrock AgentCore, Lambda, Container"
+        echo -e "   • GCP Cloud Run / GKE"
+        echo -e "   • Azure Functions / Container Apps"
+        ;;
+    default)
+        echo -e "${CYAN}Test Mode: DEFAULT${NC} - Deploy for AWS/GCP, Local for Azure"
+        echo ""
+        echo -e "   These tests make ${BOLD}real API calls${NC} to:"
+        echo -e "   • Cisco AI Defense API (API mode)"
+        echo -e "   • Cisco AI Defense Gateway (Gateway mode)"
+        echo -e "   • AWS Bedrock AgentCore (deploy)"
+        echo -e "   • GCP Cloud Run / GKE (deploy)"
+        echo -e "   • Azure OpenAI (local only)"
+        ;;
+esac
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BOLD}Test Plan:${NC}"
 echo ""
 
+# Function to get the test mode for a runtime
+get_runtime_test_mode() {
+    local runtime="$1"
+    case "$TEST_MODE" in
+        local) echo "local" ;;
+        deploy) echo "deploy" ;;
+        default)
+            case "$runtime" in
+                amazon-bedrock-agentcore) echo "deploy" ;;
+                gcp-vertex-ai-agent-engine) echo "deploy" ;;
+                microsoft-foundry) echo "local" ;;
+            esac
+            ;;
+    esac
+}
+
 for runtime in "${RUNTIMES_TO_RUN[@]}"; do
+    runtime_mode=$(get_runtime_test_mode "$runtime")
     if [ -n "$QUICK" ]; then
         mode_count=1
         case "$runtime" in
             amazon-bedrock-agentcore)
-                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC}"
+                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC} [${runtime_mode}]"
                 echo -e "     Deploy modes: direct (api only)"
                 ;;
             gcp-vertex-ai-agent-engine)
-                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC}"
+                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC} [${runtime_mode}]"
                 echo -e "     Deploy modes: agent-engine (api only)"
+                ;;
+            microsoft-foundry)
+                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC} [${runtime_mode}]"
+                echo -e "     Deploy modes: foundry-agent-app (api only)"
                 ;;
         esac
     else
         mode_count=6
         case "$runtime" in
             amazon-bedrock-agentcore)
-                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC}"
+                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC} [${runtime_mode}]"
                 echo -e "     Deploy modes: direct, container, lambda"
                 echo -e "     Integration modes: api, gateway"
                 ;;
             gcp-vertex-ai-agent-engine)
-                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC}"
+                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC} [${runtime_mode}]"
                 echo -e "     Deploy modes: agent-engine, cloud-run, gke"
+                echo -e "     Integration modes: api, gateway"
+                ;;
+            microsoft-foundry)
+                echo -e "   ${GREEN}✓${NC} ${BOLD}$runtime${NC} [${runtime_mode}]"
+                echo -e "     Deploy modes: foundry-agent-app, azure-functions, foundry-container"
                 echo -e "     Integration modes: api, gateway"
                 ;;
         esac
@@ -172,6 +257,7 @@ done
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BOLD}Summary:${NC}"
+echo -e "   Test mode:      $TEST_MODE"
 echo -e "   Total runtimes: ${#RUNTIMES_TO_RUN[@]}"
 echo -e "   Total tests:    $TOTAL_TESTS"
 echo -e "   Estimated time: ${BOLD}~${TOTAL_MINUTES}m ${TOTAL_SECONDS}s${NC}"
@@ -206,6 +292,7 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 RUNTIME_RESULTS=()
+RUNTIME_TIMES=()  # Track time per runtime
 
 echo ""
 echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════${NC}"
@@ -218,18 +305,30 @@ for runtime in "${RUNTIMES_TO_RUN[@]}"; do
     echo -e "${CYAN}  Runtime: ${BOLD}$runtime${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
+    RUNTIME_START=$(date +%s)
+    
     RUNTIME_DIR="$SCRIPT_DIR/$runtime"
     TEST_SCRIPT="$RUNTIME_DIR/tests/integration/test-all-modes.sh"
     
     if [ ! -f "$TEST_SCRIPT" ]; then
         echo -e "  ${YELLOW}⊘ SKIP${NC}: Test script not found: $TEST_SCRIPT"
-        RUNTIME_RESULTS+=("$runtime: SKIPPED")
+        RUNTIME_RESULTS+=("$runtime: SKIPPED (0s)")
+        RUNTIME_TIMES+=("$runtime:0")
         ((SKIPPED++))
         continue
     fi
     
-    # Build test arguments based on runtime
+    # Build test arguments based on runtime and test mode
     TEST_ARGS=""
+    
+    # Add local/deploy flag based on test mode
+    runtime_mode=$(get_runtime_test_mode "$runtime")
+    if [ "$runtime_mode" = "local" ]; then
+        TEST_ARGS="$TEST_ARGS --local"
+    else
+        TEST_ARGS="$TEST_ARGS --deploy"
+    fi
+    
     if [ -n "$VERBOSE" ]; then
         TEST_ARGS="$TEST_ARGS --verbose"
     fi
@@ -242,16 +341,29 @@ for runtime in "${RUNTIMES_TO_RUN[@]}"; do
             gcp-vertex-ai-agent-engine)
                 TEST_ARGS="$TEST_ARGS --quick"  # Uses agent-engine + api mode
                 ;;
+            microsoft-foundry)
+                TEST_ARGS="$TEST_ARGS agent-app --api"  # Uses foundry-agent-app + api mode
+                ;;
         esac
     fi
     
     # Run tests
     cd "$RUNTIME_DIR"
     if bash "$TEST_SCRIPT" $TEST_ARGS; then
-        RUNTIME_RESULTS+=("$runtime: ✅ PASSED")
+        RUNTIME_END=$(date +%s)
+        RUNTIME_DURATION=$((RUNTIME_END - RUNTIME_START))
+        RUNTIME_DURATION_MIN=$((RUNTIME_DURATION / 60))
+        RUNTIME_DURATION_SEC=$((RUNTIME_DURATION % 60))
+        RUNTIME_RESULTS+=("$runtime: ✅ PASSED (${RUNTIME_DURATION_MIN}m ${RUNTIME_DURATION_SEC}s)")
+        RUNTIME_TIMES+=("$runtime:$RUNTIME_DURATION")
         ((PASSED++))
     else
-        RUNTIME_RESULTS+=("$runtime: ❌ FAILED")
+        RUNTIME_END=$(date +%s)
+        RUNTIME_DURATION=$((RUNTIME_END - RUNTIME_START))
+        RUNTIME_DURATION_MIN=$((RUNTIME_DURATION / 60))
+        RUNTIME_DURATION_SEC=$((RUNTIME_DURATION % 60))
+        RUNTIME_RESULTS+=("$runtime: ❌ FAILED (${RUNTIME_DURATION_MIN}m ${RUNTIME_DURATION_SEC}s)")
+        RUNTIME_TIMES+=("$runtime:$RUNTIME_DURATION")
         ((FAILED++))
     fi
 done
@@ -271,16 +383,28 @@ echo -e "${BOLD}${BLUE}║                    FINAL TEST SUMMARY                
 echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
+echo -e "${CYAN}Runtime Results:${NC}"
 for result in "${RUNTIME_RESULTS[@]}"; do
     echo -e "   $result"
 done
 
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}Timing Breakdown:${NC}"
+for time_entry in "${RUNTIME_TIMES[@]}"; do
+    runtime_name="${time_entry%%:*}"
+    runtime_secs="${time_entry##*:}"
+    runtime_m=$((runtime_secs / 60))
+    runtime_s=$((runtime_secs % 60))
+    printf "   %-30s %dm %ds\n" "$runtime_name:" "$runtime_m" "$runtime_s"
+done
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${CYAN}Test Totals:${NC}"
 echo -e "   ${GREEN}Passed${NC}:  $PASSED"
 echo -e "   ${RED}Failed${NC}:  $FAILED"
 echo -e "   ${YELLOW}Skipped${NC}: $SKIPPED"
-echo -e "   Duration: ${DURATION_MIN}m ${DURATION_SEC}s"
+echo -e "   ${BOLD}Total Duration: ${DURATION_MIN}m ${DURATION_SEC}s${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 

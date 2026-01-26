@@ -102,8 +102,8 @@ AI_DEFENSE_API_MODE_LLM_API_KEY=your-api-key
 MCP_SERVER_URL=https://mcp.deepwiki.com/mcp
 
 # agentsec Configuration
-AGENTSEC_API_MODE_LLM=on_monitor
-AGENTSEC_API_MODE_MCP=on_monitor
+AGENTSEC_API_MODE_LLM=monitor
+AGENTSEC_API_MODE_MCP=monitor
 AGENTSEC_API_MODE_FAIL_OPEN_LLM=true
 AGENTSEC_LOG_LEVEL=DEBUG
 
@@ -152,7 +152,7 @@ See the [examples README](../../README.md) for full authentication method docume
 |------|----------|
 | `off` | No inspection, no patching |
 | `monitor` | Inspect & log, never block (recommended for testing) |
-| `on_enforce` | Inspect & block policy violations |
+| `enforce` | Inspect & block policy violations |
 
 ## How It Works
 
@@ -327,7 +327,7 @@ export AWS_SECRET_ACCESS_KEY=...
 Verify `MCP_SERVER_URL` is correct and the server is accessible.
 
 ### Security Policy Blocked
-If running in `on_enforce` mode, adjust `AGENTSEC_API_MODE_LLM=on_monitor` for development.
+If running in `enforce` mode, adjust `AGENTSEC_API_MODE_LLM=monitor` for development.
 
 ## Related Examples
 

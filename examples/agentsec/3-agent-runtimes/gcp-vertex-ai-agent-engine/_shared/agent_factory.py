@@ -71,13 +71,13 @@ agentsec.protect(
     mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
     
     # API mode configuration (LLM)
-    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "on_monitor"),
+    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
     api_mode_llm_endpoint=os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
     api_mode_llm_api_key=os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
     api_mode_fail_open_llm=True,
     
     # API mode configuration (MCP)
-    api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "on_monitor"),
+    api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "monitor"),
     api_mode_mcp_endpoint=os.getenv("AI_DEFENSE_API_MODE_MCP_ENDPOINT"),
     api_mode_mcp_api_key=os.getenv("AI_DEFENSE_API_MODE_MCP_API_KEY"),
     api_mode_fail_open_mcp=True,
@@ -94,8 +94,8 @@ agentsec.protect(
     auto_dotenv=False,
 )
 
-print(f"[agentsec] SDK: {GOOGLE_AI_SDK} | LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'on_monitor')} | "
-      f"MCP: {os.getenv('AGENTSEC_API_MODE_MCP', 'on_monitor')} | "
+print(f"[agentsec] SDK: {GOOGLE_AI_SDK} | LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'monitor')} | "
+      f"MCP: {os.getenv('AGENTSEC_API_MODE_MCP', 'monitor')} | "
       f"Integration: LLM={os.getenv('AGENTSEC_LLM_INTEGRATION_MODE', 'api')}, MCP={os.getenv('AGENTSEC_MCP_INTEGRATION_MODE', 'api')} | "
       f"Patched: {agentsec.get_patched_clients()}")
 

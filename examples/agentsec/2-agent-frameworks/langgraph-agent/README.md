@@ -111,8 +111,8 @@ AI_DEFENSE_API_MODE_LLM_API_KEY=your-key-here
 MCP_SERVER_URL=https://mcp.deepwiki.com/mcp
 
 # agentsec mode: off | monitor | enforce
-AGENTSEC_API_MODE_LLM=on_monitor
-AGENTSEC_API_MODE_MCP=on_monitor
+AGENTSEC_API_MODE_LLM=monitor
+AGENTSEC_API_MODE_MCP=monitor
 
 # Provider-specific credentials (set based on provider)
 # AWS Bedrock

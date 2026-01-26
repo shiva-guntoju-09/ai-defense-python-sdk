@@ -32,7 +32,7 @@ from aidefense.runtime import agentsec
 # Enable AI Defense protection for all LLM calls
 # Reads mode from environment: AGENTSEC_LLM_INTEGRATION_MODE (api/gateway)
 agentsec.protect(
-    api_mode_llm="on_monitor",
+    api_mode_llm="monitor",
     api_mode_fail_open_llm=True,
 )
 

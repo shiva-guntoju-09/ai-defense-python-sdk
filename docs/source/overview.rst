@@ -50,7 +50,7 @@ Configure via environment variables:
    AGENTSEC_LLM_INTEGRATION_MODE=api
    AI_DEFENSE_API_MODE_LLM_ENDPOINT=https://api.inspect.aidefense.cisco.com/api
    AI_DEFENSE_API_MODE_LLM_API_KEY=your-api-key
-   AGENTSEC_API_MODE_LLM=on_enforce
+   AGENTSEC_API_MODE_LLM=enforce
 
 Chat Inspection
 ^^^^^^^^^^^^^^^

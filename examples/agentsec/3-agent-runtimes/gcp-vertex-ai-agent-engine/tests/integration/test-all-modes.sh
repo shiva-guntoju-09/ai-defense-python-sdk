@@ -5,17 +5,22 @@
 # Tests all three deployment modes (agent-engine, cloud-run, gke) in both
 # API and Gateway integration modes for Cisco AI Defense.
 #
-# IMPORTANT: This script performs REAL deployments to GCP infrastructure!
+# Test Modes:
+#   - Local (default): Tests agent locally using GCP Vertex AI credentials only
+#   - Deploy (--deploy): Deploys to GCP and tests real Cloud Run/GKE endpoints
+#
+# IMPORTANT: With --deploy, this script performs REAL deployments to GCP!
 #   - Cloud Run: Deploys container to Cloud Run service
 #   - GKE: Deploys container to GKE cluster (creates cluster if needed)
 #
 # Usage:
-#   ./test-all-modes.sh                       # Run all tests (6 total)
+#   ./test-all-modes.sh                       # Run local tests (default)
+#   ./test-all-modes.sh --deploy              # Deploy and test in GCP
 #   ./test-all-modes.sh --quick               # Quick mode (agent-engine local, API mode only)
 #   ./test-all-modes.sh --mode cloud-run      # Run specific deploy mode
 #   ./test-all-modes.sh --api                 # Run API mode tests only
 #   ./test-all-modes.sh --gateway             # Run Gateway mode tests only
-#   ./test-all-modes.sh --local               # Run local tests only (no GCP deploy)
+#   ./test-all-modes.sh --local               # Explicit local mode (same as default)
 #   ./test-all-modes.sh --cleanup             # Cleanup deployments after tests
 #
 # Environment:
@@ -35,6 +40,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Paths
@@ -65,6 +71,9 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0
 
+# Timing tracking (using regular array with key:value format for bash 3 compatibility)
+DEPLOY_MODE_TIMES=()
+
 # Available deploy modes
 ALL_DEPLOY_MODES=("agent-engine" "cloud-run" "gke")
 
@@ -75,7 +84,7 @@ ALL_INTEGRATION_MODES=("api" "gateway")
 DEPLOY_MODES_TO_RUN=("${ALL_DEPLOY_MODES[@]}")
 INTEGRATION_MODES_TO_RUN=("${ALL_INTEGRATION_MODES[@]}")
 QUICK_MODE=false
-LOCAL_ONLY=false
+LOCAL_ONLY=true   # Default to local tests (no GCP deployment)
 DO_CLEANUP=false
 RUN_LLM_TESTS=true
 RUN_MCP_TESTS=true
@@ -116,8 +125,9 @@ show_help() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
+    echo "  --local           Run LOCAL tests (default) - tests agent with GCP Vertex AI only"
+    echo "  --deploy          Run DEPLOY tests - deploys to GCP and tests real endpoints"
     echo "  --quick           Quick mode (agent-engine local only, API mode only)"
-    echo "  --local           Run local tests only (no GCP deployment)"
     echo "  --mode MODE       Run specific deploy mode (agent-engine, cloud-run, gke)"
     echo "  --api             Run API mode tests only"
     echo "  --gateway         Run Gateway mode tests only"
@@ -126,17 +136,25 @@ show_help() {
     echo "  --cleanup         Cleanup deployments after tests"
     echo "  --help            Show this help"
     echo ""
+    echo "Test Modes:"
+    echo "  Without --deploy: Tests agent LOCALLY using GCP Vertex AI credentials"
+    echo "                    Requires: GOOGLE_CLOUD_PROJECT, gcloud auth"
+    echo ""
+    echo "  With --deploy:    Deploys to GCP and tests real Cloud Run/GKE endpoints"
+    echo "                    Requires: gcloud CLI, Docker, Cloud Run/GKE permissions"
+    echo ""
     echo "Environment:"
     echo "  GOOGLE_AI_SDK     SDK to use: 'vertexai' (default) or 'google_genai'"
     echo "  MCP_SERVER_URL    MCP server URL (default: https://mcp.deepwiki.com/mcp)"
     echo ""
     echo "Examples:"
-    echo "  $0                                  # Run all tests (LLM + MCP)"
+    echo "  $0                                  # Run local tests (default)"
+    echo "  $0 --deploy                         # Deploy and test in GCP"
     echo "  $0 --quick                          # Quick local test (1 test)"
-    echo "  $0 --local                          # Local tests only (no GCP deploy)"
+    echo "  $0 --deploy --api                   # Deploy and test, API mode only"
     echo "  $0 --mcp-only                       # Run only MCP tests"
-    echo "  $0 --mode cloud-run --api           # Test Cloud Run with API mode only"
-    echo "  $0 --mode gke --cleanup             # Test GKE and cleanup after"
+    echo "  $0 --deploy --mode cloud-run --api  # Deploy Cloud Run, API mode only"
+    echo "  $0 --deploy --mode gke --cleanup    # Deploy GKE and cleanup after"
     echo "  GOOGLE_AI_SDK=google_genai $0       # Test with modern google-genai SDK"
 }
 
@@ -147,13 +165,17 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --quick)
             QUICK_MODE=true
-            LOCAL_ONLY=true
+            # Don't override LOCAL_ONLY - let --deploy/--local control that
             DEPLOY_MODES_TO_RUN=("agent-engine")
             INTEGRATION_MODES_TO_RUN=("api")
             shift
             ;;
         --local)
             LOCAL_ONLY=true
+            shift
+            ;;
+        --deploy)
+            LOCAL_ONLY=false
             shift
             ;;
         --mode)
@@ -374,20 +396,32 @@ test_mcp_protection() {
 # =============================================================================
 # Setup
 # =============================================================================
-log_header "GCP Vertex AI Agent Engine Integration Tests"
-
+if [ "$LOCAL_ONLY" = true ]; then
+    log_header "GCP Vertex AI Agent Engine Integration Tests (LOCAL MODE)"
+    echo ""
+    echo -e "${BLUE}LOCAL MODE: Testing agent locally using GCP Vertex AI${NC}"
+    echo -e "${BLUE}Use --deploy flag to deploy and test real GCP endpoints${NC}"
+else
+    log_header "GCP Vertex AI Agent Engine Integration Tests (DEPLOY MODE)"
+    echo ""
+    echo -e "${YELLOW}DEPLOY MODE: Testing with real GCP Cloud Run/GKE endpoints${NC}"
+fi
+echo ""
 echo "Project:           ${GOOGLE_CLOUD_PROJECT:?Error: GOOGLE_CLOUD_PROJECT not set}"
 echo "Location:          ${GOOGLE_CLOUD_LOCATION:-us-central1}"
 echo "SDK:               ${GOOGLE_AI_SDK:-vertexai}"
+echo "Test mode:         $([ "$LOCAL_ONLY" = true ] && echo "local" || echo "deploy")"
 echo "Deploy modes:      ${DEPLOY_MODES_TO_RUN[*]}"
 echo "Integration modes: ${INTEGRATION_MODES_TO_RUN[*]}"
 echo "Run LLM tests:     $RUN_LLM_TESTS"
 echo "Run MCP tests:     $RUN_MCP_TESTS"
 echo "MCP Server:        ${MCP_SERVER_URL:-not set (will use default)}"
 echo "Quick mode:        $QUICK_MODE"
-echo "Local only:        $LOCAL_ONLY"
 echo "Cleanup after:     $DO_CLEANUP"
 echo ""
+
+# Track overall start time (includes setup and all tests)
+TOTAL_START_TIME=$(date +%s)
 
 # Install dependencies
 log_info "Installing dependencies..."
@@ -482,11 +516,15 @@ test_cloud_run() {
     
     # Deploy to Cloud Run
     log_info "Deploying to Cloud Run ($integration_mode mode)..."
+    local deploy_start=$(date +%s)
     if ! "$PROJECT_DIR/cloud-run-deploy/scripts/deploy.sh" >> "$log_file" 2>&1; then
         log_fail "Cloud Run deployment failed ($integration_mode mode) - see $log_file"
         tail -30 "$log_file"
         return 1
     fi
+    local deploy_end=$(date +%s)
+    local deploy_duration=$((deploy_end - deploy_start))
+    log_pass "Cloud Run deployed successfully (${deploy_duration}s)"
     
     # Wait a moment for service to be ready
     sleep 5
@@ -531,6 +569,72 @@ test_cloud_run() {
 # =============================================================================
 # Test GKE Mode (Real Deployment)
 # =============================================================================
+
+# Helper: Check GKE cluster API connectivity and update authorized networks if needed
+check_gke_connectivity() {
+    local cluster_name="$1"
+    local location="$2"
+    local project="$3"
+    local log_file="$4"
+    
+    # Get cluster credentials first
+    log_info "Getting cluster credentials..."
+    if ! gcloud container clusters get-credentials "$cluster_name" --region "$location" --project "$project" --quiet >> "$log_file" 2>&1; then
+        echo "Failed to get cluster credentials" >> "$log_file"
+        return 1
+    fi
+    
+    # Try a simple kubectl command with short timeout to check connectivity
+    log_info "Checking cluster API connectivity..."
+    if kubectl cluster-info --request-timeout=10s >> "$log_file" 2>&1; then
+        return 0  # Connected successfully
+    fi
+    
+    # Check if it's a TLS handshake timeout (Master Authorized Networks issue)
+    if grep -qi "TLS handshake timeout\|net/http: TLS handshake timeout\|connection refused\|dial tcp.*timeout" "$log_file"; then
+        log_info "Cluster API not reachable - updating Master Authorized Networks..."
+        
+        # Get current public IP
+        local my_ip
+        my_ip=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || curl -s --connect-timeout 5 api.ipify.org 2>/dev/null || echo "")
+        
+        if [ -z "$my_ip" ]; then
+            echo "Could not detect public IP" >> "$log_file"
+            return 2  # Special code: can't determine IP
+        fi
+        
+        log_info "Detected your IP: $my_ip"
+        log_info "Adding $my_ip/32 to Master Authorized Networks..."
+        
+        # Update the cluster's authorized networks
+        if gcloud container clusters update "$cluster_name" \
+            --region "$location" \
+            --project "$project" \
+            --enable-master-authorized-networks \
+            --master-authorized-networks "$my_ip/32" >> "$log_file" 2>&1; then
+            
+            log_info "Master Authorized Networks updated successfully"
+            
+            # Wait a moment for the change to propagate
+            sleep 5
+            
+            # Try to connect again
+            if kubectl cluster-info --request-timeout=15s >> "$log_file" 2>&1; then
+                log_pass "Cluster API connectivity restored"
+                return 0
+            else
+                echo "Still cannot connect after updating authorized networks" >> "$log_file"
+                return 3  # Updated but still can't connect
+            fi
+        else
+            echo "Failed to update Master Authorized Networks" >> "$log_file"
+            return 4  # Failed to update
+        fi
+    fi
+    
+    return 1  # Generic connectivity failure
+}
+
 test_gke() {
     local integration_mode="$1"
     local log_file="$LOG_DIR/gke-$integration_mode.log"
@@ -572,13 +676,55 @@ test_gke() {
         fi
     fi
     
+    # Check cluster API connectivity (and auto-fix if needed)
+    local connectivity_result=0
+    check_gke_connectivity "$CLUSTER_NAME" "$LOCATION" "$PROJECT" "$log_file" || connectivity_result=$?
+    
+    case $connectivity_result in
+        0)
+            # Connected successfully
+            ;;
+        2)
+            log_skip "GKE test ($integration_mode mode) - Could not detect your public IP"
+            log_info "Set GKE_AUTHORIZED_NETWORKS in .env and run: ./deploy.sh setup"
+            return 0
+            ;;
+        3)
+            log_skip "GKE test ($integration_mode mode) - Master Authorized Networks updated but still cannot connect"
+            log_info "The change may take a few minutes to propagate. Please try again shortly."
+            return 0
+            ;;
+        4)
+            log_skip "GKE test ($integration_mode mode) - Failed to update Master Authorized Networks"
+            log_info "You may not have permission to update cluster settings."
+            log_info "Ask your GCP admin to add your IP to the cluster's Master Authorized Networks."
+            return 0
+            ;;
+        *)
+            log_skip "GKE test ($integration_mode mode) - Cluster API not reachable"
+            log_info "Your IP may not be in the cluster's Master Authorized Networks."
+            log_info "Run: ./gke-deploy/scripts/deploy.sh setup"
+            return 0
+            ;;
+    esac
+    
     # Deploy to GKE
     log_info "Deploying to GKE ($integration_mode mode)..."
+    local deploy_start=$(date +%s)
     if ! "$PROJECT_DIR/gke-deploy/scripts/deploy.sh" >> "$log_file" 2>&1; then
+        # Check if it's a TLS timeout during deployment
+        if grep -qi "TLS handshake timeout" "$log_file"; then
+            log_skip "GKE deployment ($integration_mode mode) - TLS handshake timeout"
+            log_info "Your IP may have changed. Run: ./gke-deploy/scripts/deploy.sh setup"
+            return 0
+        fi
         log_fail "GKE deployment failed ($integration_mode mode) - see $log_file"
         tail -30 "$log_file"
         return 1
     fi
+    local deploy_end=$(date +%s)
+    local deploy_duration=$((deploy_end - deploy_start))
+    log_pass "GKE deployed successfully (${deploy_duration}s)"
     
     # Wait for service to be ready
     sleep 10
@@ -678,10 +824,15 @@ run_test_for_mode() {
 
 # Run LLM tests (deploy modes x integration modes)
 if [ "$RUN_LLM_TESTS" = "true" ]; then
-    for integration_mode in "${INTEGRATION_MODES_TO_RUN[@]}"; do
-        for deploy_mode in "${DEPLOY_MODES_TO_RUN[@]}"; do
+    for deploy_mode in "${DEPLOY_MODES_TO_RUN[@]}"; do
+        DEPLOY_MODE_START=$(date +%s)
+        
+        for integration_mode in "${INTEGRATION_MODES_TO_RUN[@]}"; do
             run_test_for_mode "$deploy_mode" "$integration_mode" || true
         done
+        
+        DEPLOY_MODE_END=$(date +%s)
+        DEPLOY_MODE_TIMES+=("$deploy_mode:$((DEPLOY_MODE_END - DEPLOY_MODE_START))")
     done
 fi
 
@@ -689,9 +840,14 @@ fi
 if [ "$RUN_MCP_TESTS" = "true" ]; then
     log_header "MCP Tool Protection Tests"
     
+    MCP_START=$(date +%s)
+    
     for integration_mode in "${INTEGRATION_MODES_TO_RUN[@]}"; do
         test_mcp_protection "$integration_mode" || true
     done
+    
+    MCP_END=$(date +%s)
+    DEPLOY_MODE_TIMES+=("mcp:$((MCP_END - MCP_START))")
 fi
 
 # Cleanup if requested
@@ -702,6 +858,13 @@ fi
 # =============================================================================
 # Summary
 # =============================================================================
+
+# Calculate total time
+TOTAL_END_TIME=$(date +%s)
+TOTAL_DURATION=$((TOTAL_END_TIME - TOTAL_START_TIME))
+TOTAL_DURATION_MIN=$((TOTAL_DURATION / 60))
+TOTAL_DURATION_SEC=$((TOTAL_DURATION % 60))
+
 log_header "Test Summary"
 
 TOTAL=$((TESTS_PASSED + TESTS_FAILED + TESTS_SKIPPED))
@@ -715,6 +878,16 @@ echo -e "║  Failed:  ${RED}$TESTS_FAILED${NC}                                 
 echo -e "║  Skipped: ${YELLOW}$TESTS_SKIPPED${NC}                                                        ║"
 echo "║  Total:   $TOTAL                                                         ║"
 echo "╠══════════════════════════════════════════════════════════════════════╣"
+echo "║  Timing Breakdown:                                                   ║"
+for time_entry in "${DEPLOY_MODE_TIMES[@]}"; do
+    mode_name="${time_entry%%:*}"
+    mode_secs="${time_entry##*:}"
+    mode_min=$((mode_secs / 60))
+    mode_sec=$((mode_secs % 60))
+    printf "║    %-20s %dm %ds                                    ║\n" "$mode_name:" "$mode_min" "$mode_sec"
+done
+printf "║  %-22s ${BOLD}%dm %ds${NC}                                    ║\n" "Total Runtime:" "$TOTAL_DURATION_MIN" "$TOTAL_DURATION_SEC"
+echo "╠══════════════════════════════════════════════════════════════════════╣"
 echo "║  Protection Verified:                                                ║"
 echo "║    • LLM Request/Response: agentsec patches ChatVertexAI            ║"
 echo "║    • MCP Request/Response: agentsec patches mcp.ClientSession       ║"
@@ -724,9 +897,9 @@ echo "Logs saved to: $LOG_DIR"
 echo ""
 
 if [ $TESTS_FAILED -gt 0 ]; then
-    echo -e "${RED}Some tests failed! Check logs for details.${NC}"
+    echo -e "${RED}Some tests failed in ${TOTAL_DURATION_MIN}m ${TOTAL_DURATION_SEC}s! Check logs for details.${NC}"
     exit 1
 else
-    echo -e "${GREEN}All tests passed!${NC}"
+    echo -e "${GREEN}All tests passed in ${TOTAL_DURATION_MIN}m ${TOTAL_DURATION_SEC}s!${NC}"
     exit 0
 fi

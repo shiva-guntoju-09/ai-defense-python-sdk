@@ -31,7 +31,7 @@ def main() -> None:
     
     # Enable protection with enforce mode for LLM calls
     # This will autopatch supported LLM clients (OpenAI, Azure OpenAI, Bedrock, Vertex AI)
-    agentsec.protect(api_mode_llm="on_enforce")
+    agentsec.protect(api_mode_llm="enforce")
     
     # Alternative: Use Gateway mode instead of API mode
     # Each provider has its own gateway connection

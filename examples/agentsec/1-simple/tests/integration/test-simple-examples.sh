@@ -24,6 +24,9 @@ if ! command -v poetry &> /dev/null; then
     exit 1
 fi
 
+# Track overall start time (includes setup and all tests)
+TOTAL_START_TIME=$(date +%s)
+
 # Ensure poetry dependencies are installed
 # Always run poetry install to ensure virtualenv exists with all dependencies
 echo "Ensuring dependencies are installed..."
@@ -61,6 +64,9 @@ NC='\033[0m' # No Color
 PASSED=0
 FAILED=0
 FAILED_TESTS=""
+
+# Timing tracking (using regular array with key:value format for bash 3 compatibility)
+EXAMPLE_TIMES=()
 
 echo "=============================================="
 echo "  Simple Examples Integration Tests"
@@ -246,6 +252,8 @@ run_example_tests() {
     local name="$1"
     local script="$2"
     
+    local example_start=$(date +%s)
+    
     echo "=============================================="
     echo -e "  ${CYAN}$name${NC}"
     echo "=============================================="
@@ -260,6 +268,9 @@ run_example_tests() {
     run_test_with_mode "$name" "$script" "gateway" "gateway"
     verify_protection_with_mode "$name" "$script" "gateway" "gateway"
     echo ""
+    
+    local example_end=$(date +%s)
+    EXAMPLE_TIMES+=("$name:$((example_end - example_start))")
 }
 
 echo ""
@@ -278,6 +289,12 @@ run_example_tests "gateway_mode_example.py" "gateway_mode_example.py"
 run_example_tests "skip_inspection_example.py" "skip_inspection_example.py"
 run_example_tests "simple_strands_bedrock.py" "simple_strands_bedrock.py"
 
+# Calculate total time
+TOTAL_END_TIME=$(date +%s)
+TOTAL_DURATION=$((TOTAL_END_TIME - TOTAL_START_TIME))
+TOTAL_DURATION_MIN=$((TOTAL_DURATION / 60))
+TOTAL_DURATION_SEC=$((TOTAL_DURATION % 60))
+
 echo "=============================================="
 echo "  Test Results Summary"
 echo "=============================================="
@@ -285,15 +302,31 @@ echo ""
 echo -e "Total Tests: $((PASSED + FAILED))"
 echo -e "Passed: ${GREEN}$PASSED${NC}"
 echo -e "Failed: ${RED}$FAILED${NC}"
+echo ""
+
+# Timing breakdown
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}  Timing Breakdown:${NC}"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+for time_entry in "${EXAMPLE_TIMES[@]}"; do
+    example_name="${time_entry%%:*}"
+    example_secs="${time_entry##*:}"
+    example_min=$((example_secs / 60))
+    example_sec=$((example_secs % 60))
+    printf "  %-30s %dm %ds\n" "$example_name:" "$example_min" "$example_sec"
+done
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "  Total Runtime:                ${TOTAL_DURATION_MIN}m ${TOTAL_DURATION_SEC}s"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
 
 if [ $FAILED -gt 0 ]; then
     echo -e "\nFailed tests:${FAILED_TESTS}"
     echo ""
-    echo -e "${RED}Some tests failed!${NC}"
+    echo -e "${RED}Some tests failed in ${TOTAL_DURATION_MIN}m ${TOTAL_DURATION_SEC}s!${NC}"
     exit 1
 else
-    echo ""
-    echo -e "${GREEN}ALL TESTS PASSED!${NC}"
+    echo -e "${GREEN}ALL TESTS PASSED in ${TOTAL_DURATION_MIN}m ${TOTAL_DURATION_SEC}s!${NC}"
     echo ""
     echo "✓ All examples work in API mode"
     echo "✓ All examples work in Gateway mode"

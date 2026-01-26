@@ -112,7 +112,7 @@ response = client.chat.completions.create(
 AGENTSEC_LLM_INTEGRATION_MODE=api
 AI_DEFENSE_API_MODE_LLM_ENDPOINT=https://api.inspect.aidefense.cisco.com/api
 AI_DEFENSE_API_MODE_LLM_API_KEY=your-api-key
-AGENTSEC_API_MODE_LLM=on_enforce  # on_monitor, on_enforce, or off
+AGENTSEC_API_MODE_LLM=enforce  # monitor, enforce, or off
 
 # Gateway Mode
 AGENTSEC_LLM_INTEGRATION_MODE=gateway
@@ -185,7 +185,7 @@ pip install cisco-aidefense-sdk
 export AGENTSEC_LLM_INTEGRATION_MODE=api
 export AI_DEFENSE_API_MODE_LLM_ENDPOINT=https://api.inspect.aidefense.cisco.com/api
 export AI_DEFENSE_API_MODE_LLM_API_KEY=your-api-key
-export AGENTSEC_API_MODE_LLM=on_enforce
+export AGENTSEC_API_MODE_LLM=enforce
 export OPENAI_API_KEY=your-openai-key
 
 # Run simple examples

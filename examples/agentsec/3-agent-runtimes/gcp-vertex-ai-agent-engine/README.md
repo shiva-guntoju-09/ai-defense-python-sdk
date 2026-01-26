@@ -195,11 +195,11 @@ import agentsec
 agentsec.protect(
     # LLM Protection
     llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
-    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "on_monitor"),
+    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
     
     # MCP Protection
     mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
-    api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "on_monitor"),
+    api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "monitor"),
     
     providers={
         "vertexai": {
@@ -274,8 +274,8 @@ poetry run pytest tests/unit/ -v
 | `MCP_SERVER_URL` | MCP server for fetch_url tool | Optional |
 | `AGENTSEC_LLM_INTEGRATION_MODE` | `api` or `gateway` | `api` |
 | `AGENTSEC_MCP_INTEGRATION_MODE` | `api` or `gateway` | `api` |
-| `AGENTSEC_API_MODE_LLM` | API mode behavior | `on_monitor` |
-| `AGENTSEC_API_MODE_MCP` | API mode behavior | `on_monitor` |
+| `AGENTSEC_API_MODE_LLM` | API mode behavior | `monitor` |
+| `AGENTSEC_API_MODE_MCP` | API mode behavior | `monitor` |
 
 ### Deployment-Specific Variables
 

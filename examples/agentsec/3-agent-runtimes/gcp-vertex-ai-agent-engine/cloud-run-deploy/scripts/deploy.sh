@@ -23,7 +23,7 @@
 #   GOOGLE_CLOUD_LOCATION        - GCP region (default: us-central1)
 #   CLOUD_RUN_SERVICE            - Service name (default: sre-agent-cloudrun)
 #   AGENTSEC_LLM_INTEGRATION_MODE - api or gateway (default: api)
-#   AGENTSEC_API_MODE_LLM        - off/on_monitor/on_enforce (default: on_monitor)
+#   AGENTSEC_API_MODE_LLM        - off/monitor/enforce (default: monitor)
 #   AI_DEFENSE_API_MODE_LLM_ENDPOINT - AI Defense API endpoint
 #   AI_DEFENSE_API_MODE_LLM_API_KEY  - AI Defense API key
 #
@@ -60,7 +60,7 @@ IMAGE_NAME="$LOCATION-docker.pkg.dev/$PROJECT/$ARTIFACT_REPO/$SERVICE_NAME"
 
 # AI Defense configuration
 INTEGRATION_MODE="${AGENTSEC_LLM_INTEGRATION_MODE:-api}"
-API_MODE="${AGENTSEC_API_MODE_LLM:-on_monitor}"
+API_MODE="${AGENTSEC_API_MODE_LLM:-monitor}"
 API_ENDPOINT="${AI_DEFENSE_API_MODE_LLM_ENDPOINT:-}"
 API_KEY="${AI_DEFENSE_API_MODE_LLM_API_KEY:-}"
 GOOGLE_AI_SDK="${GOOGLE_AI_SDK:-vertexai}"

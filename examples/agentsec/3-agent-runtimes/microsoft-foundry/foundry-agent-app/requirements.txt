@@ -1,0 +1,23 @@
+# Azure AI Foundry Agent Application Dependencies
+# These are installed in the deployment environment
+
+# Web framework
+flask>=3.0.0
+
+# LangChain for agent orchestration
+langchain-openai>=0.1.0
+langchain-core>=0.2.0
+
+# MCP client for tool integration
+mcp>=1.11.0
+
+# Environment variable loading
+python-dotenv>=1.0.0
+
+# HTTP client (used by agentsec)
+httpx>=0.24.0
+
+# Nested async support (for MCP tools)
+nest-asyncio>=1.5.0
+
+# Note: agentsec is copied from source (not on PyPI)

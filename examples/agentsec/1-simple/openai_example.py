@@ -27,7 +27,7 @@ if env_file.exists():
 # IMPORTANT: Enable protection BEFORE importing OpenAI
 # This ensures the client gets patched correctly
 from aidefense.runtime import agentsec
-agentsec.protect(api_mode_llm="on_monitor")  # Use monitor mode for this example
+agentsec.protect(api_mode_llm="monitor")  # Use monitor mode for this example
 
 
 def main() -> None:

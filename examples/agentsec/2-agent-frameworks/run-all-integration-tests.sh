@@ -242,6 +242,7 @@ START_TIME=$(date +%s)
 PASSED=0
 FAILED=0
 FRAMEWORK_RESULTS=()
+FRAMEWORK_TIMES=()  # Track time per framework
 
 echo ""
 echo -e "${BOLD}${BLUE}════════════════════════════════════════════════════════════════════${NC}"
@@ -254,12 +255,15 @@ for framework in "${FRAMEWORKS_TO_RUN[@]}"; do
     echo -e "${CYAN}  Framework: ${BOLD}$framework${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
+    FRAMEWORK_START=$(date +%s)
+    
     FRAMEWORK_DIR="$SCRIPT_DIR/$framework"
     TEST_SCRIPT="$FRAMEWORK_DIR/tests/integration/test-all-providers.sh"
     
     if [ ! -f "$TEST_SCRIPT" ]; then
         echo -e "  ${YELLOW}⊘ SKIP${NC}: Test script not found"
-        FRAMEWORK_RESULTS+=("$framework: SKIPPED")
+        FRAMEWORK_RESULTS+=("$framework: SKIPPED (0s)")
+        FRAMEWORK_TIMES+=("$framework:0")
         continue
     fi
     
@@ -272,10 +276,20 @@ for framework in "${FRAMEWORKS_TO_RUN[@]}"; do
     # Run tests
     cd "$FRAMEWORK_DIR"
     if bash "$TEST_SCRIPT" $VERBOSE $MODE_ARG $QUICK; then
-        FRAMEWORK_RESULTS+=("$framework: ✅ PASSED")
+        FRAMEWORK_END=$(date +%s)
+        FRAMEWORK_DURATION=$((FRAMEWORK_END - FRAMEWORK_START))
+        FRAMEWORK_DURATION_MIN=$((FRAMEWORK_DURATION / 60))
+        FRAMEWORK_DURATION_SEC=$((FRAMEWORK_DURATION % 60))
+        FRAMEWORK_RESULTS+=("$framework: ✅ PASSED (${FRAMEWORK_DURATION_MIN}m ${FRAMEWORK_DURATION_SEC}s)")
+        FRAMEWORK_TIMES+=("$framework:$FRAMEWORK_DURATION")
         ((PASSED++))
     else
-        FRAMEWORK_RESULTS+=("$framework: ❌ FAILED")
+        FRAMEWORK_END=$(date +%s)
+        FRAMEWORK_DURATION=$((FRAMEWORK_END - FRAMEWORK_START))
+        FRAMEWORK_DURATION_MIN=$((FRAMEWORK_DURATION / 60))
+        FRAMEWORK_DURATION_SEC=$((FRAMEWORK_DURATION % 60))
+        FRAMEWORK_RESULTS+=("$framework: ❌ FAILED (${FRAMEWORK_DURATION_MIN}m ${FRAMEWORK_DURATION_SEC}s)")
+        FRAMEWORK_TIMES+=("$framework:$FRAMEWORK_DURATION")
         ((FAILED++))
     fi
 done
@@ -295,26 +309,38 @@ echo -e "${BOLD}${BLUE}║                    FINAL TEST SUMMARY                
 echo -e "${BOLD}${BLUE}╚══════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
+echo -e "${CYAN}Framework Results:${NC}"
 for result in "${FRAMEWORK_RESULTS[@]}"; do
     echo -e "   $result"
 done
 
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${CYAN}Timing Breakdown:${NC}"
+for time_entry in "${FRAMEWORK_TIMES[@]}"; do
+    framework_name="${time_entry%%:*}"
+    framework_secs="${time_entry##*:}"
+    framework_m=$((framework_secs / 60))
+    framework_s=$((framework_secs % 60))
+    printf "   %-25s %dm %ds\n" "$framework_name:" "$framework_m" "$framework_s"
+done
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo -e "${CYAN}Test Totals:${NC}"
 echo -e "   ${GREEN}Passed${NC}:  $PASSED"
 echo -e "   ${RED}Failed${NC}:  $FAILED"
-echo -e "   Duration: ${DURATION_MIN}m ${DURATION_SEC}s"
+echo -e "   ${BOLD}Total Duration: ${DURATION_MIN}m ${DURATION_SEC}s${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 if [ $FAILED -eq 0 ]; then
     echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}${BOLD}  ✅ ALL INTEGRATION TESTS PASSED!${NC}"
+    echo -e "${GREEN}${BOLD}  ✅ ALL INTEGRATION TESTS PASSED in ${DURATION_MIN}m ${DURATION_SEC}s!${NC}"
     echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
     exit 0
 else
     echo -e "${RED}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${RED}${BOLD}  ❌ SOME TESTS FAILED ($FAILED/${#FRAMEWORKS_TO_RUN[@]} frameworks)${NC}"
+    echo -e "${RED}${BOLD}  ❌ SOME TESTS FAILED ($FAILED/${#FRAMEWORKS_TO_RUN[@]} frameworks) in ${DURATION_MIN}m ${DURATION_SEC}s${NC}"
     echo -e "${RED}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
     exit 1
 fi

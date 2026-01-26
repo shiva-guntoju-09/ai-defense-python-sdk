@@ -59,8 +59,8 @@ def configure_agentsec():
         mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
         
         # API Mode Configuration (when integration_mode="api")
-        api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "on_monitor"),
-        api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "on_monitor"),
+        api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
+        api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "monitor"),
         api_mode_llm_endpoint=os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
         api_mode_llm_api_key=os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
         api_mode_mcp_endpoint=os.getenv("AI_DEFENSE_API_MODE_MCP_ENDPOINT"),
@@ -89,7 +89,7 @@ def configure_agentsec():
         auto_dotenv=False,  # We already loaded .env manually
     )
     
-    print(f"[agentsec] LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'on_monitor')} | "
+    print(f"[agentsec] LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'monitor')} | "
           f"Integration: {os.getenv('AGENTSEC_LLM_INTEGRATION_MODE', 'api')} | "
           f"Patched: {agentsec.get_patched_clients()}")
 

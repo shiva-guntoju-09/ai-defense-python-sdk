@@ -10,6 +10,9 @@ Usage:
     Set MCP_SERVER_URL environment variable to enable MCP tools:
     MCP_SERVER_URL=https://mcp.deepwiki.com/mcp
     
+    Optional: Set MCP_TIMEOUT to configure timeout (default: 60 seconds)
+    MCP_TIMEOUT=60
+    
 Example:
     from _shared.mcp_tools import fetch_url, get_mcp_tools
     
@@ -20,19 +23,32 @@ Example:
 """
 
 import asyncio
+import logging
 import os
 import time
 
 from langchain_core.tools import tool
 
-# Global MCP URL - set from environment
-_mcp_url = os.getenv("MCP_SERVER_URL")
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# MCP configuration - refreshed on get_mcp_tools() call
+_mcp_url = None
+_mcp_timeout = 120  # Default timeout in seconds
+
+
+def _get_mcp_config():
+    """Get current MCP configuration from environment."""
+    global _mcp_url, _mcp_timeout
+    _mcp_url = os.getenv("MCP_SERVER_URL")
+    _mcp_timeout = int(os.getenv("MCP_TIMEOUT", "60"))
+    return _mcp_url, _mcp_timeout
 
 
 def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
     """Synchronously call an MCP tool by creating a fresh MCP connection.
     
-    This function creates a new event loop and MCP connection for each call.
+    This function uses asyncio.run() for cleaner event loop management.
     
     The actual MCP call (session.call_tool) is intercepted by agentsec's
     MCP patcher for AI Defense inspection.
@@ -44,9 +60,9 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
     Returns:
         Text result from the MCP tool
     """
-    global _mcp_url
+    mcp_url, mcp_timeout = _get_mcp_config()
     
-    if not _mcp_url:
+    if not mcp_url:
         return "Error: MCP_SERVER_URL not configured"
     
     # Import MCP client here to ensure agentsec has patched it
@@ -54,20 +70,25 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
     from mcp import ClientSession
     
     async def _async_call():
-        async with streamablehttp_client(_mcp_url, timeout=120) as (read, write, _):
+        async with streamablehttp_client(mcp_url, timeout=mcp_timeout) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 # This call is INTERCEPTED by agentsec for AI Defense inspection!
                 result = await session.call_tool(tool_name, arguments)
                 return result.content[0].text if result.content else "No answer"
     
-    # Create a new event loop for this thread
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # Use asyncio.run() for cleaner event loop management
     try:
-        return loop.run_until_complete(_async_call())
-    finally:
-        loop.close()
+        return asyncio.run(_async_call())
+    except RuntimeError as e:
+        # Fall back to creating a new event loop if we're already in an async context
+        if "cannot be called from a running event loop" in str(e):
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(_async_call())
+            finally:
+                loop.close()
+        raise
 
 
 @tool
@@ -86,15 +107,15 @@ def fetch_url(url: str) -> str:
     Returns:
         The text content of the URL
     """
-    global _mcp_url
-    print(f"[MCP TOOL] fetch_url called: url={url}", flush=True)
+    mcp_url, _ = _get_mcp_config()
+    logger.info(f"fetch_url called: url={url}")
     
-    if _mcp_url is None:
-        print("[MCP TOOL] MCP_SERVER_URL not set!", flush=True)
+    if mcp_url is None:
+        logger.warning("MCP_SERVER_URL not set")
         return "Error: MCP not configured. Set MCP_SERVER_URL environment variable."
     
     try:
-        print(f"[MCP TOOL] Calling MCP server at {_mcp_url}...", flush=True)
+        logger.info(f"Calling MCP server at {mcp_url}")
         start = time.time()
         
         # Call the MCP server's 'fetch' tool
@@ -102,28 +123,33 @@ def fetch_url(url: str) -> str:
         response_text = _sync_call_mcp_tool('fetch', {'url': url})
         
         elapsed = time.time() - start
-        print(f"[MCP TOOL] Got response ({len(response_text)} chars) in {elapsed:.1f}s", flush=True)
+        logger.info(f"Got response ({len(response_text)} chars) in {elapsed:.1f}s")
         return response_text
+    except asyncio.TimeoutError:
+        logger.error(f"MCP call timed out after {_mcp_timeout}s")
+        return f"Error: MCP call timed out after {_mcp_timeout} seconds"
+    except ConnectionError as e:
+        logger.error(f"MCP connection error: {e}")
+        return f"Error: Could not connect to MCP server: {e}"
     except Exception as e:
-        print(f"[MCP TOOL ERROR] {type(e).__name__}: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"MCP tool error: {type(e).__name__}: {e}")
         return f"Error fetching URL: {e}"
 
 
 def get_mcp_tools():
     """Get MCP tools if MCP_SERVER_URL is configured.
     
+    This function refreshes the MCP configuration from environment variables.
+    
     Returns:
         List of MCP tool functions (LangChain @tool decorated) if configured,
         empty list otherwise
     """
-    global _mcp_url
-    _mcp_url = os.getenv("MCP_SERVER_URL")
+    mcp_url, mcp_timeout = _get_mcp_config()
     
-    if _mcp_url:
-        print(f"[MCP] Enabled with server: {_mcp_url}", flush=True)
+    if mcp_url:
+        logger.info(f"MCP enabled: server={mcp_url}, timeout={mcp_timeout}s")
         return [fetch_url]
     else:
-        print("[MCP] Disabled (MCP_SERVER_URL not set)", flush=True)
+        logger.info("MCP disabled (MCP_SERVER_URL not set)")
         return []

@@ -5,3 +5,9 @@ strands-agents
 bedrock-agentcore
 cisco-aidefense-sdk
 python-dotenv
+httpx
+requests
+wrapt
+pyyaml
+aiohttp
+pydantic

@@ -163,24 +163,25 @@ echo -e "${BOLD}${BLUE}╚══════════════════
 echo ""
 
 if [ "$TEST_RESULT" = "PASSED" ]; then
-    echo -e "   simple-examples: ${GREEN}✅ PASSED${NC}"
+    echo -e "   simple-examples: ${GREEN}✅ PASSED${NC} (${DURATION_MIN}m ${DURATION_SEC}s)"
 else
-    echo -e "   simple-examples: ${RED}❌ FAILED${NC}"
+    echo -e "   simple-examples: ${RED}❌ FAILED${NC} (${DURATION_MIN}m ${DURATION_SEC}s)"
 fi
 
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "   Duration: ${DURATION_MIN}m ${DURATION_SEC}s"
+echo -e "${CYAN}Timing:${NC}"
+echo -e "   ${BOLD}Total Duration: ${DURATION_MIN}m ${DURATION_SEC}s${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 if [ "$TEST_RESULT" = "PASSED" ]; then
     echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}${BOLD}  ✅ ALL INTEGRATION TESTS PASSED!${NC}"
+    echo -e "${GREEN}${BOLD}  ✅ ALL INTEGRATION TESTS PASSED in ${DURATION_MIN}m ${DURATION_SEC}s!${NC}"
     echo -e "${GREEN}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
 else
     echo -e "${RED}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${RED}${BOLD}  ❌ SOME TESTS FAILED${NC}"
+    echo -e "${RED}${BOLD}  ❌ SOME TESTS FAILED in ${DURATION_MIN}m ${DURATION_SEC}s${NC}"
     echo -e "${RED}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
 fi
 

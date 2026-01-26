@@ -26,10 +26,18 @@ Usage:
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
 from pathlib import Path
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+# Configurable timeout from environment
+MCP_TIMEOUT = int(os.getenv("MCP_TIMEOUT", "60"))
 
 # Load shared .env file (before agentsec.protect())
 from dotenv import load_dotenv
@@ -83,7 +91,7 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
     
     def run_in_thread():
         async def _async_call():
-            async with streamablehttp_client(_mcp_url, timeout=120) as (read, write, _):
+            async with streamablehttp_client(_mcp_url, timeout=MCP_TIMEOUT) as (read, write, _):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     result = await session.call_tool(tool_name, arguments)
@@ -102,7 +110,7 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
     # Run in a separate thread to avoid event loop conflicts
     thread = threading.Thread(target=run_in_thread)
     thread.start()
-    thread.join(timeout=120)
+    thread.join(timeout=MCP_TIMEOUT)
     
     if result_container["error"]:
         raise result_container["error"]
@@ -120,24 +128,22 @@ def fetch_url(url: str) -> str:
         The text content of the URL
     """
     global _mcp_url
-    print(f"[DEBUG] fetch_url called: url={url}", flush=True)
+    logger.info(f"fetch_url called: url={url}")
     if _mcp_url is None:
-        print("[DEBUG] MCP URL not set!", flush=True)
+        logger.warning("MCP URL not set")
         return "Error: MCP not configured"
     
     try:
-        print(f"[TOOL CALL] fetch_url(url='{url}')", flush=True)
+        logger.info(f"Calling fetch tool for '{url}'")
         start = time.time()
         
         response_text = _sync_call_mcp_tool('fetch', {'url': url})
         
         elapsed = time.time() - start
-        print(f"[TOOL] Got response ({len(response_text)} chars) in {elapsed:.1f}s", flush=True)
+        logger.info(f"Got response ({len(response_text)} chars) in {elapsed:.1f}s")
         return response_text
     except Exception as e:
-        print(f"[TOOL ERROR] {type(e).__name__}: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Tool error: {type(e).__name__}: {e}")
         return f"Error: {e}"
 
 
@@ -194,7 +200,7 @@ class OpenAIAgent:
         self.messages = [
             {"role": "system", "content": get_system_prompt()}
         ]
-        print(f"[DEBUG] OpenAIAgent initialized with model: {self.model}", flush=True)
+        logger.debug(f"OpenAIAgent initialized with model: {self.model}")
     
     def _process_tool_calls(self, tool_calls) -> list:
         """Process tool calls and return results."""
@@ -202,7 +208,7 @@ class OpenAIAgent:
         for tool_call in tool_calls:
             func_name = tool_call.function.name
             func_args = json.loads(tool_call.function.arguments)
-            print(f"[DEBUG] Processing tool call: {func_name}({func_args})", flush=True)
+            logger.debug(f"Processing tool call: {func_name}({func_args})")
             
             if func_name == "fetch_url":
                 result = fetch_url(**func_args)
@@ -218,13 +224,13 @@ class OpenAIAgent:
     
     def chat(self, user_message: str) -> str:
         """Send a message and get a response, handling tool calls if needed."""
-        print(f"[DEBUG] chat() called with: {user_message[:50]}...", flush=True)
+        logger.debug(f"chat() called with: {user_message[:50]}...")
         
         # Add user message
         self.messages.append({"role": "user", "content": user_message})
         
         # First call - may trigger tool use
-        print("[DEBUG] Making LLM call...", flush=True)
+        logger.debug("Making LLM call")
         start = time.time()
         response = self.client.chat.completions.create(
             model=self.model,
@@ -233,13 +239,13 @@ class OpenAIAgent:
             tool_choice="auto" if _mcp_url else None,
         )
         elapsed = time.time() - start
-        print(f"[DEBUG] LLM call completed in {elapsed:.1f}s", flush=True)
+        logger.debug(f"LLM call completed in {elapsed:.1f}s")
         
         assistant_message = response.choices[0].message
         
         # Check if the model wants to use tools
         if assistant_message.tool_calls:
-            print(f"[DEBUG] Model requested {len(assistant_message.tool_calls)} tool call(s)", flush=True)
+            logger.debug(f"Model requested {len(assistant_message.tool_calls)} tool call(s)")
             
             # Add assistant's message with tool calls
             self.messages.append({
@@ -263,14 +269,14 @@ class OpenAIAgent:
             self.messages.extend(tool_results)
             
             # Second call with tool results
-            print("[DEBUG] Making follow-up LLM call with tool results...", flush=True)
+            logger.debug("Making follow-up LLM call with tool results")
             start = time.time()
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=self.messages,
             )
             elapsed = time.time() - start
-            print(f"[DEBUG] Follow-up LLM call completed in {elapsed:.1f}s", flush=True)
+            logger.debug(f"Follow-up LLM call completed in {elapsed:.1f}s")
             
             assistant_message = response.choices[0].message
         
@@ -301,25 +307,25 @@ async def setup_mcp():
     _mcp_url = mcp_url
     
     if not mcp_url:
-        print("[DEBUG] MCP_SERVER_URL not set, MCP tools disabled", flush=True)
+        logger.debug("MCP_SERVER_URL not set, MCP tools disabled")
         return None, None
     
-    print(f"[mcp] Connecting to {mcp_url}...", flush=True)
+    logger.info(f"Connecting to MCP server: {mcp_url}")
     try:
-        mcp_context = streamablehttp_client(mcp_url, timeout=60)
-        print("[DEBUG] MCP context created", flush=True)
+        mcp_context = streamablehttp_client(mcp_url, timeout=MCP_TIMEOUT)
+        logger.debug("MCP context created")
         read, write, _ = await mcp_context.__aenter__()
-        print("[DEBUG] MCP context entered", flush=True)
+        logger.debug("MCP context entered")
         session_context = ClientSession(read, write)
         _mcp_session = await session_context.__aenter__()
-        print("[DEBUG] MCP session created", flush=True)
+        logger.debug("MCP session created")
         await _mcp_session.initialize()
-        print("[DEBUG] MCP session initialized", flush=True)
+        logger.debug("MCP session initialized")
         tools_list = await _mcp_session.list_tools()
-        print(f"[mcp] Connected! Tools: {[t.name for t in tools_list.tools]}", flush=True)
+        logger.info(f"MCP connected. Tools: {[t.name for t in tools_list.tools]}")
         return mcp_context, session_context
     except Exception as e:
-        print(f"[mcp] Connection failed: {e}", flush=True)
+        logger.warning(f"MCP connection failed: {e}")
         _mcp_session = None
         # Keep _mcp_url set so tools can still attempt fresh connections
         # (MCP server may be temporarily unavailable or become available later)
@@ -328,7 +334,7 @@ async def setup_mcp():
 
 async def run_agent(initial_message: str = None):
     """Run the OpenAI Agent with MCP tools."""
-    print("[DEBUG] run_agent started", flush=True)
+    logger.debug("run_agent started")
     
     # Load configuration and create provider
     try:
@@ -351,7 +357,7 @@ async def run_agent(initial_message: str = None):
     # Create agent with provider's client
     model = provider.model_id
     client = provider.get_openai_client()
-    print(f"[agent] Creating OpenAI Agent with model: {model}", flush=True)
+    logger.info(f"Creating OpenAI Agent with model: {model}")
     agent = OpenAIAgent(model=model, client=client)
     
     print("\n" + "=" * 60, flush=True)
@@ -362,11 +368,11 @@ async def run_agent(initial_message: str = None):
     if initial_message:
         print(f"\nYou: {initial_message}", flush=True)
         try:
-            print("[DEBUG] Calling agent.chat()...", flush=True)
+            logger.debug("Calling agent.chat()")
             start = time.time()
             response = agent.chat(initial_message)
             elapsed = time.time() - start
-            print(f"[DEBUG] agent.chat() returned in {elapsed:.1f}s", flush=True)
+            logger.debug(f"agent.chat() returned in {elapsed:.1f}s")
             print(f"\nAgent: {response}", flush=True)
         except SecurityPolicyError as e:
             print(f"\n[BLOCKED] {e.decision.action}: {e.decision.reasons}", flush=True)
@@ -397,7 +403,7 @@ async def run_agent(initial_message: str = None):
                 continue
             
             try:
-                print("[DEBUG] Calling agent.chat()...", flush=True)
+                logger.debug("Calling agent.chat()")
                 response = agent.chat(user_input)
                 print(f"\nAgent: {response}\n", flush=True)
             except SecurityPolicyError as e:
@@ -418,17 +424,17 @@ async def cleanup_mcp(mcp_context, session_context):
             await session_context.__aexit__(None, None, None)
     except Exception as e:
         # Log cleanup errors at debug level (expected during shutdown)
-        print(f"[DEBUG] MCP session cleanup: {type(e).__name__}", flush=True)
+        logger.debug(f"MCP session cleanup: {type(e).__name__}")
     try:
         if mcp_context:
             await mcp_context.__aexit__(None, None, None)
     except Exception as e:
-        print(f"[DEBUG] MCP context cleanup: {type(e).__name__}", flush=True)
+        logger.debug(f"MCP context cleanup: {type(e).__name__}")
 
 
 def main():
     """Entry point."""
-    print("[DEBUG] main() started", flush=True)
+    logger.debug("main() started")
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
     
@@ -442,19 +448,19 @@ def main():
     
     # Get initial message from command line if provided
     initial_message = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
-    print(f"[DEBUG] Initial message: {initial_message}", flush=True)
+    logger.debug(f"Initial message: {initial_message}")
     
     loop = asyncio.new_event_loop()
     loop.set_exception_handler(exception_handler)
     try:
-        print("[DEBUG] Starting event loop...", flush=True)
+        logger.debug("Starting event loop")
         loop.run_until_complete(run_agent(initial_message))
     finally:
         # Suppress shutdown errors
         try:
             loop.run_until_complete(loop.shutdown_asyncgens())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error during async generator shutdown: {e}")
         loop.close()
 
 

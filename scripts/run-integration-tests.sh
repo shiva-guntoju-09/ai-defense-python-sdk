@@ -12,6 +12,7 @@
 #   ./scripts/run-integration-tests.sh strands      # Run specific agent framework tests
 #   ./scripts/run-integration-tests.sh amazon-bedrock-agentcore       # Run specific runtime tests
 #   ./scripts/run-integration-tests.sh gcp-vertex-ai-agent-engine     # Run specific runtime tests
+#   ./scripts/run-integration-tests.sh microsoft-foundry              # Run specific runtime tests
 #   ./scripts/run-integration-tests.sh --agents --gateway   # Combine flags
 #
 
@@ -93,9 +94,15 @@ while [[ $# -gt 0 ]]; do
             SPECIFIC_RUNTIME="gcp-vertex-ai-agent-engine"
             shift
             ;;
+        microsoft-foundry)
+            RUN_SIMPLE=false
+            RUN_AGENTS=false
+            SPECIFIC_RUNTIME="microsoft-foundry"
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--simple] [--agents] [--runtimes] [--api] [--gateway] [strands|langgraph|langchain|crewai|autogen|openai|amazon-bedrock-agentcore|gcp-vertex-ai-agent-engine]"
+            echo "Usage: $0 [--simple] [--agents] [--runtimes] [--api] [--gateway] [strands|langgraph|langchain|crewai|autogen|openai|amazon-bedrock-agentcore|gcp-vertex-ai-agent-engine|microsoft-foundry]"
             exit 1
             ;;
     esac
@@ -187,7 +194,7 @@ if [ "$RUN_RUNTIMES" = true ]; then
     echo -e "══════════════════════════════════════════════${NC}"
     echo ""
     
-    RUNTIMES=("amazon-bedrock-agentcore" "gcp-vertex-ai-agent-engine")
+    RUNTIMES=("amazon-bedrock-agentcore" "gcp-vertex-ai-agent-engine" "microsoft-foundry")
     
     for runtime in "${RUNTIMES[@]}"; do
         # Skip if specific runtime requested and this isn't it

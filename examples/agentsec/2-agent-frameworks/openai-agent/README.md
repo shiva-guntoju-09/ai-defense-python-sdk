@@ -102,8 +102,8 @@ AI_DEFENSE_API_MODE_LLM_API_KEY=your-api-key
 MCP_SERVER_URL=https://mcp.deepwiki.com/mcp
 
 # agentsec Configuration
-AGENTSEC_API_MODE_LLM=on_monitor
-AGENTSEC_API_MODE_MCP=on_monitor
+AGENTSEC_API_MODE_LLM=monitor
+AGENTSEC_API_MODE_MCP=monitor
 AGENTSEC_API_MODE_FAIL_OPEN_LLM=true
 AGENTSEC_LOG_LEVEL=DEBUG
 
@@ -140,7 +140,7 @@ The OpenAI SDK is designed specifically for OpenAI and Azure OpenAI. For other p
 |------|----------|
 | `off` | No inspection, no patching |
 | `monitor` | Inspect & log, never block (recommended for testing) |
-| `on_enforce` | Inspect & block policy violations |
+| `enforce` | Inspect & block policy violations |
 
 ## How It Works
 
@@ -270,7 +270,7 @@ Ensure `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_API_KEY` are set in `../../../.
 Verify `MCP_SERVER_URL` is correct and the server is accessible.
 
 ### Security Policy Blocked
-If running in `on_enforce` mode, adjust `AGENTSEC_API_MODE_LLM=on_monitor` for development.
+If running in `enforce` mode, adjust `AGENTSEC_API_MODE_LLM=monitor` for development.
 
 ### "Provider not supported"
 This example only supports OpenAI and Azure OpenAI. For Bedrock or Vertex AI, use:

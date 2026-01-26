@@ -39,11 +39,27 @@ elif [ -f "$ROOT_DIR/.env" ]; then
     set +a
 fi
 
-# Set defaults
+# Set defaults - Container deploy requires ECR in the same region
+# Default to us-west-2 where the existing ECR repo lives
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
 export PYTHONPATH="$ROOT_DIR"
-export ECR_URI="${ECR_URI:-422940237045.dkr.ecr.us-west-2.amazonaws.com/bedrock-agentcore-my_agent}"
+
+# Get AWS account ID for ECR URI
+AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "422940237045")}"
+
+# ECR URI must be in the same region as the agent
+# Default to existing repo in us-west-2
+export ECR_URI="${ECR_URI:-${AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/bedrock-agentcore-my_agent}"
+
+# Extract region from ECR URI and ensure agent region matches
+ECR_REGION=$(echo "$ECR_URI" | sed -n 's|.*\.ecr\.\([^.]*\)\.amazonaws\.com.*|\1|p')
+if [ -n "$ECR_REGION" ] && [ "$ECR_REGION" != "$AWS_REGION" ]; then
+    echo "WARNING: ECR region ($ECR_REGION) differs from AWS_REGION ($AWS_REGION)"
+    echo "Setting AWS_REGION to match ECR region for container deployment"
+    export AWS_REGION="$ECR_REGION"
+    export AWS_DEFAULT_REGION="$ECR_REGION"
+fi
 
 echo "=============================================="
 echo "AgentCore Container Deploy"

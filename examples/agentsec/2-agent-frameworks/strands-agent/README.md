@@ -162,8 +162,8 @@ AI_DEFENSE_API_MODE_LLM_API_KEY=your-key-here
 MCP_SERVER_URL=https://mcp.deepwiki.com/mcp
 
 # agentsec modes: off | monitor | enforce
-AGENTSEC_API_MODE_LLM=on_monitor
-AGENTSEC_API_MODE_MCP=on_monitor
+AGENTSEC_API_MODE_LLM=monitor
+AGENTSEC_API_MODE_MCP=monitor
 
 # Fail-open behavior (allow requests if AI Defense is unreachable)
 AGENTSEC_API_MODE_FAIL_OPEN_LLM=true
