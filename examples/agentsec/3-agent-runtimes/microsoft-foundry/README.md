@@ -1,0 +1,255 @@
+# Microsoft Azure AI Foundry Examples with agentsec Protection
+
+This directory contains examples demonstrating how to deploy AI agents to **Microsoft Azure AI Foundry** with **Cisco AI Defense** protection via the `agentsec` SDK.
+
+## Overview
+
+These examples show three deployment modes for Azure AI Foundry, all protected by agentsec for both LLM and MCP calls:
+
+| Deployment Mode | Description | Use Case |
+|-----------------|-------------|----------|
+| **Foundry Agent App** | Flask app deployed as managed online endpoint | Production web services |
+| **Azure Functions** | Serverless function deployment | Event-driven, cost-efficient |
+| **Foundry Container** | Custom container deployment | Full control, complex dependencies |
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                   Azure AI Foundry                           │
+├──────────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐ │
+│  │ Foundry Agent   │  │ Azure Functions │  │ Container    │ │
+│  │ Application     │  │                 │  │ Deployment   │ │
+│  └────────┬────────┘  └────────┬────────┘  └──────┬───────┘ │
+│           │                    │                   │         │
+│           └────────────────────┼───────────────────┘         │
+│                                │                             │
+│                    ┌───────────▼───────────┐                 │
+│                    │   _shared/            │                 │
+│                    │   agent_factory.py    │                 │
+│                    │   (LangChain Agent)   │                 │
+│                    └───────────┬───────────┘                 │
+│                                │                             │
+│                    ┌───────────▼───────────┐                 │
+│                    │     agentsec          │                 │
+│                    │   (AI Defense SDK)    │                 │
+│                    └───────────┬───────────┘                 │
+└────────────────────────────────┼─────────────────────────────┘
+                                 │
+         ┌───────────────────────┼───────────────────────┐
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Azure OpenAI   │    │ Cisco AI Defense│    │   MCP Server    │
+│  (LLM Provider) │    │ (Inspection)    │    │   (Tools)       │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
+
+## Protection Modes
+
+agentsec supports two integration modes with Cisco AI Defense:
+
+### API Mode (Default)
+- Requests are inspected via Cisco AI Defense API
+- Pre-call and post-call inspection
+- Works with any LLM provider
+
+### Gateway Mode
+- Requests are routed through Cisco AI Defense Gateway
+- Gateway handles inspection transparently
+- Better performance for high-throughput scenarios
+
+## Prerequisites
+
+1. **Azure CLI** installed and configured
+   ```bash
+   az login
+   ```
+
+2. **Azure AI Foundry** workspace created
+
+3. **Azure OpenAI** resource with a deployed model
+
+4. **Poetry** for dependency management
+   ```bash
+   pip install poetry
+   ```
+
+5. **Environment variables** configured in `examples/.env`:
+   ```bash
+   # Azure OpenAI (for API mode - direct calls)
+   AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+   AZURE_OPENAI_API_KEY=your-api-key
+   
+   # Azure AI Foundry Deployment
+   AZURE_SUBSCRIPTION_ID=your-subscription-id
+   AZURE_RESOURCE_GROUP=your-resource-group
+   AZURE_AI_FOUNDRY_PROJECT=your-workspace-name
+   
+   # For container deployments
+   AZURE_ACR_NAME=your-acr-name
+   AZURE_ACR_LOGIN_SERVER=your-acr.azurecr.io
+   
+   # For Azure Functions
+   AZURE_FUNCTION_APP_NAME=your-function-app
+   AZURE_STORAGE_ACCOUNT=your-storage-account
+   ```
+
+## Quick Start
+
+### 1. Install Dependencies
+
+```bash
+cd examples/3-agent-runtimes/microsoft-foundry
+poetry install
+```
+
+### 2. Local Testing
+
+Test the agent locally before deploying:
+
+```bash
+# Set up environment
+source ../../.env
+
+# Test the agent directly
+poetry run python -c "
+from _shared import invoke_agent
+result = invoke_agent('Check the health of the payments service')
+print(result)
+"
+```
+
+### 3. Deploy to Azure
+
+Choose your deployment mode:
+
+#### Foundry Agent Application
+```bash
+cd foundry-agent-app
+./scripts/deploy.sh
+./scripts/invoke.sh "Check payments health"
+```
+
+#### Azure Functions
+```bash
+cd azure-functions
+./scripts/deploy.sh
+./scripts/invoke.sh "Check payments health"
+```
+
+#### Foundry Container
+```bash
+cd foundry-container
+./scripts/deploy.sh
+./scripts/invoke.sh "Check payments health"
+```
+
+## Directory Structure
+
+```
+microsoft-foundry/
+├── _shared/                      # Shared agent code
+│   ├── __init__.py
+│   ├── agent_factory.py          # LangChain agent + agentsec
+│   ├── tools.py                  # Demo tools
+│   └── mcp_tools.py              # MCP tool integration
+├── foundry-agent-app/            # Managed online endpoint
+│   ├── app.py
+│   ├── requirements.txt
+│   └── scripts/
+│       ├── deploy.sh
+│       └── invoke.sh
+├── azure-functions/              # Serverless functions
+│   ├── function_app.py
+│   ├── host.json
+│   ├── requirements.txt
+│   └── scripts/
+│       ├── deploy.sh
+│       └── invoke.sh
+├── foundry-container/            # Container deployment
+│   ├── app.py
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── scripts/
+│       ├── deploy.sh
+│       └── invoke.sh
+├── tests/
+│   ├── integration/              # Integration tests
+│   │   ├── test-all-modes.sh
+│   │   └── test_mcp_protection.py
+│   └── unit/                     # Unit tests (49 tests)
+│       └── test_foundry_example.py
+├── pyproject.toml
+└── README.md
+```
+
+## Agent Capabilities
+
+The demo SRE (Site Reliability Engineering) agent includes:
+
+### Local Tools
+- `check_service_health(service_name)` - Check service health status
+- `get_recent_logs(service_name, limit)` - Retrieve recent logs
+- `calculate_capacity(current_usage, growth_rate)` - Capacity planning
+
+### MCP Tools (Optional)
+- `fetch_url(url)` - Fetch webpage content via MCP server
+
+Enable MCP tools by setting `MCP_SERVER_URL` in your environment.
+
+## Integration Tests
+
+### Local Tests (Default)
+Run integration tests locally using your Azure OpenAI credentials:
+
+```bash
+./tests/integration/test-all-modes.sh              # Run all local tests
+./tests/integration/test-all-modes.sh --verbose    # With detailed output
+./tests/integration/test-all-modes.sh --api        # API mode only
+./tests/integration/test-all-modes.sh --gateway    # Gateway mode only
+```
+
+Local tests require only:
+- `AZURE_OPENAI_ENDPOINT`
+- `AZURE_OPENAI_API_KEY`
+
+### Azure Deployment Tests (--deploy flag)
+When you have full Azure access, use `--deploy` to deploy and test real endpoints:
+
+```bash
+./tests/integration/test-all-modes.sh --deploy              # Deploy and test all
+./tests/integration/test-all-modes.sh --deploy --verbose    # With detailed output
+./tests/integration/test-all-modes.sh --deploy agent-app    # Deploy and test agent app only
+./tests/integration/test-all-modes.sh --deploy --api        # Deploy, test API mode only
+```
+
+Deployment tests require additional Azure credentials:
+- `AZURE_SUBSCRIPTION_ID`
+- `AZURE_RESOURCE_GROUP`
+- `AZURE_AI_FOUNDRY_PROJECT`
+- `AZURE_ACR_NAME` / `AZURE_ACR_LOGIN_SERVER` (for container)
+- `AZURE_FUNCTION_APP_NAME` / `AZURE_STORAGE_ACCOUNT` (for functions)
+
+## Troubleshooting
+
+### Azure OpenAI Connection Issues
+- Verify `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_API_KEY` are set correctly
+- Check that your Azure OpenAI deployment is active
+- Ensure your IP is allowed in the Azure OpenAI firewall settings
+
+### Deployment Failures
+- Verify Azure CLI is logged in: `az account show`
+- Check resource group exists: `az group show --name $AZURE_RESOURCE_GROUP`
+- Ensure you have Contributor role on the resource group
+
+### agentsec Not Patching
+- Ensure `agentsec.protect()` is called BEFORE importing `langchain_openai`
+- Check logs for `[agentsec] Patched: ['openai', ...]`
+- Verify AI Defense API credentials in `.env`
+
+## Related Examples
+
+- [Amazon Bedrock AgentCore](../amazon-bedrock-agentcore/) - AWS deployment examples
+- [GCP Vertex AI Agent Engine](../gcp-vertex-ai-agent-engine/) - GCP deployment examples
