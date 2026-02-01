@@ -68,9 +68,56 @@ cd 2-agent-frameworks/strands-agent && poetry install && ./scripts/run.sh --open
 
 # 4. Run all tests from the repo root
 cd /path/to/ai-defense-python-sdk
-./scripts/run-unit-tests.sh           # ~1010 unit tests
+./scripts/run-unit-tests.sh           # ~1045 unit tests
 ./scripts/run-integration-tests.sh    # Full integration tests
 ```
+
+---
+
+## Environment Variables Quick Reference
+
+The `.env.example` file contains all variables organized by which examples need them. Here's a quick reference:
+
+### Core (Required for All Examples)
+
+| Variable | Description |
+|----------|-------------|
+| `AGENTSEC_LLM_INTEGRATION_MODE` | `api` or `gateway` |
+| `AGENTSEC_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+### By Integration Mode
+
+| Mode | Required Variables |
+|------|-------------------|
+| **API Mode** | `AI_DEFENSE_API_MODE_LLM_ENDPOINT`, `AI_DEFENSE_API_MODE_LLM_API_KEY` |
+| **Gateway Mode** | Provider-specific gateway URL + key (see below) |
+
+### By LLM Provider
+
+| Provider | API Mode Variables | Gateway Mode Variables |
+|----------|-------------------|----------------------|
+| **OpenAI** | `OPENAI_API_KEY` | `AGENTSEC_OPENAI_GATEWAY_URL`, `AGENTSEC_OPENAI_GATEWAY_API_KEY` |
+| **Azure OpenAI** | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME` | `AGENTSEC_AZURE_OPENAI_GATEWAY_URL`, `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` |
+| **AWS Bedrock** | `AWS_REGION` + auth (`AWS_PROFILE` or keys) | `AGENTSEC_BEDROCK_GATEWAY_URL` + AWS auth |
+| **GCP Vertex AI** | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` + ADC | `AGENTSEC_VERTEXAI_GATEWAY_URL` + ADC |
+| **MCP Tools** | `MCP_SERVER_URL`, `MCP_TIMEOUT` + MCP API vars | `AGENTSEC_MCP_GATEWAY_URL` |
+
+### By Example Path
+
+| Example | AI Defense | LLM Provider | Extra (Deploy Only) |
+|---------|------------|--------------|---------------------|
+| `1-simple/openai_example.py` | API or Gateway | OpenAI | - |
+| `1-simple/simple_strands_bedrock.py` | API or Gateway | Bedrock | - |
+| `1-simple/mcp_example.py` | API or Gateway | OpenAI + MCP | `MCP_SERVER_URL`, `MCP_TIMEOUT` |
+| `2-agent-frameworks/*/--openai` | API or Gateway | OpenAI | - |
+| `2-agent-frameworks/*/--azure` | API or Gateway | Azure OpenAI | - |
+| `2-agent-frameworks/*/--bedrock` | API or Gateway | Bedrock | - |
+| `2-agent-frameworks/*/--vertex` | API or Gateway | Vertex AI | - |
+| `3-agent-runtimes/microsoft-foundry/` | API or Gateway | Azure OpenAI | `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, etc. |
+| `3-agent-runtimes/amazon-bedrock-agentcore/` | API or Gateway | Bedrock | AWS deployment vars |
+| `3-agent-runtimes/gcp-vertex-ai-agent-engine/` | API or Gateway | Vertex AI | `GKE_AUTHORIZED_NETWORKS` |
+
+> **Tip**: Check the section headers in `.env.example` - each section shows which examples require those variables.
 
 ---
 
@@ -156,7 +203,7 @@ These prerequisites apply to both **Agent Frameworks** and **Agent Runtimes**.
 |-----------|:--------:|---------------|
 | **Cisco AI Defense API** | Yes | `AI_DEFENSE_API_MODE_LLM_ENDPOINT`, `AI_DEFENSE_API_MODE_LLM_API_KEY` |
 | **OpenAI** | If using | `OPENAI_API_KEY` |
-| **Azure OpenAI** | If using | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY` |
+| **Azure OpenAI** | If using | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME` |
 | **AWS Bedrock** | If using | AWS credentials (profile, SSO, or env vars) |
 | **Vertex AI** | If using | GCP ADC (`gcloud auth application-default login`) |
 
@@ -540,6 +587,8 @@ OPENAI_API_KEY=sk-your-openai-api-key
 ```bash
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_KEY=your-azure-openai-key
+AZURE_OPENAI_DEPLOYMENT_NAME=your-deployment-name  # e.g., gpt-4o
+AZURE_OPENAI_API_VERSION=2024-08-01-preview
 ```
 
 </details>
@@ -619,11 +668,11 @@ Select config via flag:
 | **AgentCore** | Unit | ~60 | Deploy scripts, protection setup |
 | **AgentCore** | Integration | 8 | (3 deploy x 2 modes) + 2 MCP tests |
 | **Vertex AI** | Unit | ~50 | Deploy scripts, SDK selection |
-| **Vertex AI** | Integration | 8-16 | (3 deploy x 2 modes) + 2 MCP tests** |
+| **Vertex AI** | Integration | 16 | (3 deploy x 2 modes) + 2 MCP tests** |
 | **Azure AI Foundry** | Unit | ~50 | Deploy scripts, agent factory, endpoints |
 | **Azure AI Foundry** | Integration | 8 | (3 deploy x 2 modes) + 2 MCP tests |
 
-**Total: ~1010 unit tests**
+**Total: ~1045 unit tests**
 
 *Provider support varies by framework: OpenAI Agents supports 2 providers (openai, azure), others support 4 (openai, azure, vertex, bedrock)
 
@@ -635,7 +684,7 @@ Select config via flag:
 # From project root
 cd /path/to/ai-defense-python-sdk
 
-# All unit tests (~1010 tests)
+# All unit tests (~1045 tests)
 ./scripts/run-unit-tests.sh
 
 # All integration tests
@@ -700,7 +749,7 @@ python your_agent.py
 import os
 os.environ["AGENTSEC_LOG_LEVEL"] = "DEBUG"
 
-import agentsec
+from aidefense.runtime import agentsec
 agentsec.protect()
 ```
 
