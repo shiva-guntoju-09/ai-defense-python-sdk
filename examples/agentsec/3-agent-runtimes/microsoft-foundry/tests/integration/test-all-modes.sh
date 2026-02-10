@@ -335,7 +335,7 @@ print('RESULT:', result)
 
 # Check if Foundry Agent App endpoint exists and is running
 check_foundry_agent_app_deployed() {
-    local endpoint_name="${ENDPOINT_NAME:-foundry-sre-agent}"
+    local endpoint_name="${AGENT_ENDPOINT_NAME:-${ENDPOINT_NAME:-foundry-sre-agent}}"
     az ml online-endpoint show \
         --name "$endpoint_name" \
         --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -510,8 +510,8 @@ test_foundry_agent_app_deploy() {
     elif check_foundry_agent_app_deployed; then
         log_pass "Foundry Agent App already deployed - skipping deployment"
     else
-        # Deploy
-        log_info "Deploying Foundry Agent App..."
+        # Deploy (ACR build + ML deployment often 10-20 min total)
+        log_info "Deploying Foundry Agent App... (may take 10-20 min; progress: tail -f $LOG_DIR/agent-app-deploy-setup.log)"
         if bash "$deploy_script" > "$LOG_DIR/agent-app-deploy-setup.log" 2>&1; then
             log_pass "Deployment successful"
         else
@@ -622,26 +622,32 @@ test_azure_functions_deploy() {
         fi
     fi
     
-    # Invoke
+    # Invoke (retry once after brief wait to allow for cold start)
     log_info "Invoking function with: \"$TEST_QUESTION\""
-    if bash "$invoke_script" "$TEST_QUESTION" > "$log_file" 2>&1; then
-        log_pass "Function invocation successful"
-    else
-        log_fail "Function invocation failed"
-        ((TESTS_FAILED++))
-        return 1
+    if ! bash "$invoke_script" "$TEST_QUESTION" > "$log_file" 2>&1; then
+        log_info "First invoke failed (possible cold start); waiting 10s and retrying..."
+        sleep 10
+        if ! bash "$invoke_script" "$TEST_QUESTION" > "$log_file" 2>&1; then
+            log_fail "Function invocation failed"
+            echo -e "    ${MAGENTA}─── Invoke log (last 25 lines) ───${NC}"
+            tail -25 "$log_file" | sed 's/^/    /'
+            echo -e "    ${MAGENTA}─── Full log: $log_file ───${NC}"
+            ((TESTS_FAILED++))
+            return 1
+        fi
     fi
-    
+    log_pass "Function invocation successful"
+
     # Validate
     local all_checks_passed=true
-    
+
     if grep -q "result" "$log_file"; then
         log_pass "Got response from function"
     else
         log_fail "No response from function"
         all_checks_passed=false
     fi
-    
+
     if [ "$VERBOSE" = "true" ]; then
         echo ""
         echo -e "    ${MAGENTA}─── Response ───${NC}"
@@ -1118,6 +1124,10 @@ fi
 
 # Load shared environment variables (examples/agentsec/.env is 2 levels up from microsoft-foundry)
 # Path: microsoft-foundry/ -> 3-agent-runtimes/ -> agentsec/
+# Preserve resource names if already set by parent (e.g. run-integration-tests.sh --new-resources)
+_SAVED_AGENT_ENDPOINT="$AGENT_ENDPOINT_NAME"
+_SAVED_CONTAINER_ENDPOINT="$CONTAINER_ENDPOINT_NAME"
+_SAVED_AZURE_FUNC_APP="$AZURE_FUNCTION_APP_NAME"
 SHARED_ENV="$PROJECT_DIR/../../.env"
 if [ -f "$SHARED_ENV" ]; then
     log_info "Loading environment from $SHARED_ENV"
@@ -1127,6 +1137,21 @@ if [ -f "$SHARED_ENV" ]; then
 else
     log_info "No shared .env found at $SHARED_ENV"
 fi
+# Restore resource names so --new-resources (timestamped names) from parent are not overwritten by .env
+[ -n "$_SAVED_AGENT_ENDPOINT" ] && export AGENT_ENDPOINT_NAME="$_SAVED_AGENT_ENDPOINT"
+[ -n "$_SAVED_CONTAINER_ENDPOINT" ] && export CONTAINER_ENDPOINT_NAME="$_SAVED_CONTAINER_ENDPOINT"
+[ -n "$_SAVED_AZURE_FUNC_APP" ] && export AZURE_FUNCTION_APP_NAME="$_SAVED_AZURE_FUNC_APP"
+
+# If any resource name still unset, load from last --new-resources run so "Checking Existing Deployments" finds timestamped resources
+if [ -z "${AGENT_ENDPOINT_NAME:-}" ] || [ -z "${CONTAINER_ENDPOINT_NAME:-}" ] || [ -z "${AZURE_FUNCTION_APP_NAME:-}" ]; then
+    LAST_RESOURCES_FILE="$(cd "$PROJECT_DIR/../../../../.." && pwd)/scripts/.last_new_resources_run"
+    if [ -f "$LAST_RESOURCES_FILE" ]; then
+        set -a && source "$LAST_RESOURCES_FILE" && set +a
+    fi
+fi
+
+# Remove stale aidefense copy if present (container deploy copies it for Docker build; it shadows repo aidefense in MCP tests)
+rm -rf "$PROJECT_DIR/aidefense" 2>/dev/null || true
 
 # Check required credentials
 if [ "$LOCAL_ONLY" = "true" ]; then
@@ -1224,6 +1249,10 @@ else
                         ;;
                     container)
                         test_foundry_container_deploy "$integration_mode"
+                        ;;
+                    *)
+                        log_fail "Unknown deploy_mode: $deploy_mode"
+                        ((TESTS_FAILED++))
                         ;;
                 esac
             done
