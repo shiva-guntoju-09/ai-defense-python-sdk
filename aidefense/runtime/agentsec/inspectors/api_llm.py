@@ -14,7 +14,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""LLM Inspector for Cisco AI Defense Chat Inspection API."""
+"""LLM Inspector for Cisco AI Defense Chat Inspection API.
+
+Uses ChatInspectionClient from the runtime; no direct HTTP implementation.
+"""
 
 import logging
 import threading
@@ -22,6 +25,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import httpx
+import requests
 
 from ..decision import Decision
 from ..exceptions import (
@@ -29,8 +33,123 @@ from ..exceptions import (
     InspectionTimeoutError,
     InspectionNetworkError,
 )
+from aidefense.config import Config
+from aidefense.runtime.chat_inspect import ChatInspectionClient
+from aidefense.runtime.chat_models import Message, Role
+from aidefense.runtime.models import Metadata, InspectResponse, InspectionConfig, Rule, RuleName
 
 logger = logging.getLogger("aidefense.runtime.agentsec.inspectors.llm")
+
+
+def _inspect_response_to_decision(resp: InspectResponse) -> Decision:
+    """Map runtime InspectResponse to agentsec Decision."""
+    reasons = [c.value for c in resp.classifications] if resp.classifications else []
+    if resp.explanation and resp.explanation not in reasons:
+        reasons.append(resp.explanation)
+    if not reasons and resp.rules:
+        for rule in resp.rules:
+            rn = getattr(rule, "rule_name", None) or (rule.get("rule_name") if isinstance(rule, dict) else None)
+            cl = getattr(rule, "classification", None) or (rule.get("classification") if isinstance(rule, dict) else None)
+            if cl and str(cl) not in ("NONE_VIOLATION", "NONE_SEVERITY"):
+                reasons.append(f"{rn}: {cl}")
+    severity_str = resp.severity.value if resp.severity else None
+    rules_list = [getattr(r, "__dict__", r) if not isinstance(r, dict) else r for r in (resp.rules or [])]
+    if resp.action.name == "BLOCK" or not resp.is_safe:
+        return Decision.block(
+            reasons=reasons,
+            raw_response=resp,
+            severity=severity_str,
+            classifications=[c.value for c in resp.classifications] if resp.classifications else None,
+            rules=rules_list,
+            explanation=resp.explanation,
+            event_id=resp.event_id,
+        )
+    return Decision.allow(
+        reasons=reasons,
+        raw_response=resp,
+        severity=severity_str,
+        classifications=[c.value for c in resp.classifications] if resp.classifications else None,
+        rules=rules_list,
+        explanation=resp.explanation,
+        event_id=resp.event_id,
+    )
+
+
+class _AgentSecConfig(Config):
+    """Per-inspector config for ChatInspectionClient; __new__ bypasses singleton."""
+
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+    def _initialize(
+        self,
+        runtime_base_url: str = None,
+        timeout_sec: float = None,
+        logger_instance: logging.Logger = None,
+        **kwargs,
+    ):
+        timeout_int = int(timeout_sec) if timeout_sec is not None else 30
+        Config._initialize(
+            self,
+            region="us-west-2",
+            runtime_base_url=runtime_base_url,
+            timeout=timeout_int,
+            logger=logger_instance,
+        )
+        if runtime_base_url:
+            self.runtime_base_url = runtime_base_url.rstrip("/")
+
+
+def _messages_to_runtime(messages: List[Dict[str, Any]]) -> List[Message]:
+    """Convert agentsec message dicts to runtime Message list."""
+    out = []
+    valid_roles = {r.value for r in Role}
+    for m in messages:
+        role_str = (m.get("role") or "user").lower() if isinstance(m.get("role"), str) else "user"
+        if role_str not in valid_roles:
+            role_str = "user"
+        content = m.get("content") or ""
+        if not isinstance(content, str):
+            content = str(content)
+        out.append(Message(role=Role(role_str), content=content))
+    return out
+
+
+def _metadata_to_runtime(metadata: Dict[str, Any]) -> Optional[Metadata]:
+    """Convert agentsec metadata dict to runtime Metadata if present."""
+    if not metadata or not isinstance(metadata, dict):
+        return None
+    known = {"user", "created_at", "src_app", "dst_app", "sni", "dst_ip", "src_ip", "dst_host", "user_agent", "client_transaction_id"}
+    kwargs = {k: metadata[k] for k in known if k in metadata and metadata[k] is not None}
+    return Metadata(**kwargs) if kwargs else None
+
+
+def _inspection_config_from_inspector(
+    default_rules: Optional[List[Any]],
+    entity_types: Optional[List[str]],
+) -> Optional[InspectionConfig]:
+    """Build runtime InspectionConfig from LLMInspector default_rules and entity_types."""
+    if not default_rules and not entity_types:
+        return None
+    rules = []
+    for rule in default_rules or []:
+        if isinstance(rule, dict):
+            rule_dict = dict(rule)
+        elif isinstance(rule, Rule):
+            rule_dict = {"rule_name": rule.rule_name, "entity_types": getattr(rule, "entity_types", None)}
+        else:
+            rule_dict = {"rule_name": rule}
+        if entity_types and rule_dict.get("entity_types") is None:
+            rule_dict["entity_types"] = entity_types
+        rn = rule_dict.get("rule_name")
+        try:
+            rule_name = RuleName(str(rn)) if rn else RuleName.PII
+        except ValueError:
+            rule_name = RuleName.PII
+        rules.append(Rule(rule_name=rule_name, entity_types=rule_dict.get("entity_types")))
+    if not rules and entity_types:
+        rules = [Rule(rule_name=RuleName.PII, entity_types=entity_types)]
+    return InspectionConfig(enabled_rules=rules) if rules else None
 
 
 class LLMInspector:
@@ -146,200 +265,27 @@ class LLMInspector:
             state_keepalive = _state.get_pool_max_keepalive()
             self.pool_max_keepalive = state_keepalive if state_keepalive is not None else 20
         
-        # Create sync HTTP client with configured limits
-        timeout = httpx.Timeout(self.timeout_ms / 1000.0)
-        limits = httpx.Limits(
-            max_connections=self.pool_max_connections,
-            max_keepalive_connections=self.pool_max_keepalive,
-        )
-        self._sync_client = httpx.Client(timeout=timeout, limits=limits, http2=False)
-        
-        # Async client is lazily created and reused per event loop
-        # to avoid "attached to different event loop" errors
-        self._async_client: Optional[httpx.AsyncClient] = None
-        self._async_loop_id: Optional[int] = None
-        self._async_client_lock = threading.Lock()  # Thread-safe async client creation
+        # ChatInspectionClient is created lazily via _get_chat_client()
+        self._chat_client: Optional[ChatInspectionClient] = None
+        self._chat_client_lock = threading.Lock()
     
-    def _get_async_client(self) -> httpx.AsyncClient:
-        """
-        Get or create async client for the current event loop.
-        
-        The client is reused within the same event loop but recreated
-        if the event loop changes (e.g., different threads or frameworks).
-        
-        Thread-safe: Uses lock to prevent race conditions during client creation.
-        """
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        
-        loop_id = id(loop) if loop else None
-        
-        # Fast path: check without lock if client exists for current loop
-        if self._async_client is not None and self._async_loop_id == loop_id:
-            return self._async_client
-        
-        # Slow path: acquire lock for thread-safe client creation
-        with self._async_client_lock:
-            # Double-check after acquiring lock
-            if self._async_client is not None and self._async_loop_id == loop_id:
-                return self._async_client
-            
-            old_client = None
-            # Close old client if it exists (different loop)
-            if self._async_client is not None:
-                old_client = self._async_client
-                logger.debug("Replacing async client from different event loop")
-            
-            timeout = httpx.Timeout(self.timeout_ms / 1000.0)
-            limits = httpx.Limits(
-                max_connections=self.pool_max_connections,
-                max_keepalive_connections=self.pool_max_keepalive,
+    def _get_chat_client(self) -> ChatInspectionClient:
+        """Get or create the ChatInspectionClient (thread-safe)."""
+        if self._chat_client is not None:
+            return self._chat_client
+        with self._chat_client_lock:
+            if self._chat_client is not None:
+                return self._chat_client
+            runtime_base_url = (self.endpoint or "").rstrip("/").removesuffix("/api")
+            if not runtime_base_url:
+                runtime_base_url = "https://us.api.inspect.aidefense.security.cisco.com"
+            cfg = _AgentSecConfig(
+                runtime_base_url=runtime_base_url,
+                timeout_sec=self.timeout_ms / 1000.0,
+                logger_instance=logger,
             )
-            self._async_client = httpx.AsyncClient(timeout=timeout, limits=limits, http2=False)
-            self._async_loop_id = loop_id
-            logger.debug(f"Created new async HTTP client for loop {loop_id}")
-        
-        # Attempt to close old client outside the lock to avoid blocking
-        if old_client is not None:
-            self._close_stale_async_client(old_client)
-        
-        return self._async_client
-    
-    def _close_stale_async_client(self, client: httpx.AsyncClient) -> None:
-        """
-        Attempt to close a stale async client that was created for a different event loop.
-        
-        This is a best-effort cleanup - if the client can't be closed properly,
-        it will be garbage collected with its connections.
-        """
-        try:
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                # Schedule close on current loop - this is async-safe
-                loop.create_task(self._safe_aclose(client))
-            except RuntimeError:
-                # No running loop - try sync close via internal transport
-                # httpx.AsyncClient doesn't have a sync close, so just log and let GC handle it
-                logger.warning(
-                    "Stale async HTTP client from different event loop could not be closed properly. "
-                    "Connections may leak until garbage collection."
-                )
-        except Exception as e:
-            logger.warning(f"Error closing stale async client: {e}")
-    
-    async def _safe_aclose(self, client: httpx.AsyncClient) -> None:
-        """Safely close an async client, catching any errors."""
-        try:
-            await client.aclose()
-            logger.debug("Successfully closed stale async client")
-        except Exception as e:
-            logger.debug(f"Error closing stale async client: {e}")
-    
-    def _build_request_payload(
-        self,
-        messages: List[Dict[str, Any]],
-        metadata: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """
-        Build the Chat Inspection API request payload.
-        
-        Args:
-            messages: List of conversation messages with role and content
-            metadata: Additional metadata (user, src_app, transaction_id, etc.)
-            
-        Returns:
-            Request payload dict for the API
-        """
-        payload: Dict[str, Any] = {
-            "messages": messages,
-            "metadata": metadata,
-        }
-        
-        # Build rules with entity_types if configured
-        if self.default_rules:
-            rules = []
-            for rule in self.default_rules:
-                if isinstance(rule, dict):
-                    # Rule is already a dict (e.g., {"rule_name": "PII", "entity_types": [...]})
-                    rule_dict = dict(rule)
-                else:
-                    # Rule is a string (e.g., "PII")
-                    rule_dict = {"rule_name": rule}
-                
-                # Add entity_types if configured and not already in rule
-                if self.entity_types and "entity_types" not in rule_dict:
-                    rule_dict["entity_types"] = self.entity_types
-                
-                rules.append(rule_dict)
-            payload["rules"] = rules
-        elif self.entity_types:
-            # No rules configured, but entity_types are - this might be used
-            # by the API to filter entities across all rules
-            payload["entity_types"] = self.entity_types
-        
-        return payload
-    
-    def _parse_response(self, response_data: Dict[str, Any]) -> Decision:
-        """
-        Parse the API response into a Decision.
-        
-        Args:
-            response_data: JSON response from the API
-            
-        Returns:
-            Decision based on API response
-        """
-        # The API returns action capitalized (Allow, Block, etc.) - normalize to lowercase
-        action = response_data.get("action", "allow").lower()
-        reasons = response_data.get("reasons", [])
-        sanitized_content = response_data.get("sanitized_content")
-        
-        # Extract new fields for rich result processing
-        severity = response_data.get("severity")
-        classifications = response_data.get("classifications")
-        explanation = response_data.get("explanation")
-        event_id = response_data.get("event_id")
-        
-        # Parse rules from response
-        rules_data = response_data.get("rules") or response_data.get("processed_rules")
-        
-        # Log full response for debugging block decisions
-        if action == "block":
-            logger.debug(f"AI Defense BLOCK response: {response_data}")
-        
-        # Extract reasons from "rules" field (primary source of violations)
-        if not reasons and rules_data:
-            for rule in rules_data:
-                classification = rule.get("classification")
-                if classification and classification not in ("NONE_VIOLATION", "NONE_SEVERITY"):
-                    reasons.append(f"{rule.get('rule_name')}: {classification}")
-        
-        # Map API action to Decision with all fields
-        decision_kwargs = {
-            "reasons": reasons,
-            "raw_response": response_data,
-            "severity": severity,
-            "classifications": classifications,
-            "rules": rules_data,
-            "explanation": explanation,
-            "event_id": event_id,
-        }
-        
-        if action == "block":
-            return Decision.block(**decision_kwargs)
-        elif action == "sanitize":
-            return Decision.sanitize(
-                sanitized_content=sanitized_content,
-                **decision_kwargs,
-            )
-        elif action == "monitor_only":
-            return Decision.monitor_only(**decision_kwargs)
-        else:
-            return Decision.allow(**decision_kwargs)
+            self._chat_client = ChatInspectionClient(api_key=self.api_key, config=cfg)
+            return self._chat_client
     
     def _get_backoff_delay(self, attempt: int) -> float:
         """
@@ -378,13 +324,17 @@ class LLMInspector:
             logger.warning(f"JSON decode error (not retryable): {error}")
             return False
         
-        # Always retry on timeout or network errors
+        # Always retry on timeout or network errors (httpx or requests)
         if isinstance(error, (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError)):
+            return True
+        if isinstance(error, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
             return True
         
         # Retry on configured status codes
         if isinstance(error, httpx.HTTPStatusError):
             return error.response.status_code in self.retry_status_codes
+        if isinstance(error, requests.exceptions.HTTPError) and getattr(error, "response", None):
+            return getattr(error.response, "status_code", 0) in self.retry_status_codes
         
         # Don't retry on other errors
         return False
@@ -441,13 +391,13 @@ class LLMInspector:
             logger.error("fail_open=False, blocking request due to API error")
             
             # Raise typed exceptions based on error type
-            if isinstance(error, httpx.TimeoutException):
+            if isinstance(error, (httpx.TimeoutException, requests.exceptions.Timeout)):
                 raise InspectionTimeoutError(
                     f"Inspection timed out after {self.timeout_ms}ms: {error_msg}",
                     timeout_ms=self.timeout_ms,
                 ) from error
             
-            if isinstance(error, (httpx.ConnectError, httpx.NetworkError)):
+            if isinstance(error, (httpx.ConnectError, httpx.NetworkError, requests.exceptions.ConnectionError)):
                 raise InspectionNetworkError(
                     f"Failed to connect to inspection API: {error_msg}"
                 ) from error
@@ -481,40 +431,29 @@ class LLMInspector:
             return Decision.allow()
         
         logger.info(f"Request inspection: {len(messages)} messages")
-        payload = self._build_request_payload(messages, metadata)
-        logger.debug(f"AI Defense request: {len(messages)} messages, metadata={list(metadata.keys())}")
-        logger.debug(f"AI Defense request payload: {payload}")
-        headers = {
-            "X-Cisco-AI-Defense-API-Key": self.api_key,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        
+        runtime_messages = _messages_to_runtime(messages)
+        runtime_metadata = _metadata_to_runtime(metadata or {})
+        config = _inspection_config_from_inspector(self.default_rules, self.entity_types)
         last_error: Optional[Exception] = None
         
         for attempt in range(self.retry_total):
             try:
-                response = self._sync_client.post(
-                    f"{self.endpoint}/v1/inspect/chat",
-                    json=payload,
-                    headers=headers,
+                client = self._get_chat_client()
+                resp = client.inspect_conversation(
+                    messages=runtime_messages,
+                    metadata=runtime_metadata,
+                    config=config,
+                    timeout=int(self.timeout_ms / 1000) or None,
                 )
-                response.raise_for_status()
-                response_json = response.json()
-                logger.debug(f"AI Defense response: {response_json}")
-                decision = self._parse_response(response_json)
+                decision = _inspect_response_to_decision(resp)
                 logger.info(f"Request decision: {decision.action}")
                 return decision
             except Exception as e:
                 last_error = e
                 logger.debug(f"Attempt {attempt + 1}/{self.retry_total} failed: {e}")
-                
-                # Check if we should retry
                 is_last_attempt = attempt >= self.retry_total - 1
                 if is_last_attempt or not self._should_retry(e):
                     break
-                
-                # Apply exponential backoff before next retry
                 delay = self._get_backoff_delay(attempt)
                 if delay > 0:
                     logger.debug(f"Retrying in {delay:.2f}s...")
@@ -552,99 +491,18 @@ class LLMInspector:
             logger.debug("No API endpoint/key configured, allowing by default")
             return Decision.allow()
         
-        logger.info(f"Request inspection: {len(messages)} messages")
-        payload = self._build_request_payload(messages, metadata)
-        logger.debug(f"AI Defense async request: {len(messages)} messages, metadata={list(metadata.keys())}")
-        logger.debug(f"AI Defense async request payload: {payload}")
-        headers = {
-            "X-Cisco-AI-Defense-API-Key": self.api_key,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        
-        last_error: Optional[Exception] = None
-        
-        # Reuse async client per event loop to improve performance
-        client = self._get_async_client()
-        
-        for attempt in range(self.retry_total):
-            try:
-                response = await client.post(
-                    f"{self.endpoint}/v1/inspect/chat",
-                    json=payload,
-                    headers=headers,
-                )
-                if response.status_code != 200:
-                    logger.debug(f"AI Defense async response error: {response.status_code} - {response.text[:500]}")
-                response.raise_for_status()
-                response_json = response.json()
-                logger.debug(f"AI Defense async response: {response_json}")
-                decision = self._parse_response(response_json)
-                logger.info(f"Request decision: {decision.action}")
-                return decision
-            except Exception as e:
-                last_error = e
-                logger.debug(f"Attempt {attempt + 1}/{self.retry_total} failed: {e}")
-                
-                # Check if we should retry
-                is_last_attempt = attempt >= self.retry_total - 1
-                if is_last_attempt or not self._should_retry(e):
-                    break
-                
-                # Apply exponential backoff before next retry (async sleep)
-                delay = self._get_backoff_delay(attempt)
-                if delay > 0:
-                    logger.debug(f"Retrying in {delay:.2f}s...")
-                    await asyncio.sleep(delay)
-        
-        return self._handle_error(
-            last_error,  # type: ignore
-            context="ainspect_conversation",
-            message_count=len(messages),
+        return await asyncio.to_thread(
+            self.inspect_conversation,
+            messages,
+            metadata or {},
         )
     
     def close(self) -> None:
-        """
-        Close HTTP clients.
-        
-        Closes the sync client immediately. For the async client, attempts
-        to close it if we're in an event loop context, otherwise marks it
-        for garbage collection.
-        """
-        # Close sync client
-        try:
-            self._sync_client.close()
-        except Exception as e:
-            logger.warning(f"Error closing sync HTTP client: {e}")
-        
-        # Attempt to close async client if it exists
-        with self._async_client_lock:
-            if self._async_client is not None:
-                client_to_close = self._async_client
-                self._async_client = None
-                self._async_loop_id = None
-                
-                try:
-                    import asyncio
-                    # Try to get the running loop - if we're in async context, schedule close
-                    try:
-                        loop = asyncio.get_running_loop()
-                        # Schedule the close on the current loop
-                        loop.create_task(self._safe_aclose(client_to_close))
-                    except RuntimeError:
-                        # No running loop - just clear the reference
-                        # The client will be garbage collected
-                        logger.debug("No running event loop, async client will be garbage collected")
-                except Exception as e:
-                    logger.warning(f"Error scheduling async client close: {e}")
+        """Release the ChatInspectionClient so it can be garbage collected."""
+        with self._chat_client_lock:
+            if self._chat_client is not None:
+                self._chat_client = None
     
     async def aclose(self) -> None:
-        """Close async resources."""
-        if self._async_client is not None:
-            try:
-                await self._async_client.aclose()
-            except Exception as e:
-                logger.debug(f"Error closing async HTTP client: {e}")
-            finally:
-                self._async_client = None
-                self._async_loop_id = None
+        """Release the ChatInspectionClient (same as close; client is sync)."""
+        self.close()

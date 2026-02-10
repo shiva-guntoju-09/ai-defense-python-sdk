@@ -1,17 +1,52 @@
-"""Tests for MCPInspector with real API integration."""
+"""Tests for MCPInspector with real API integration.
+
+MCPInspector uses MCPInspectionClient; tests mock _get_mcp_client where needed.
+"""
 
 import os
 from unittest.mock import patch, MagicMock
 import pytest
 import httpx
 
-from aidefense.runtime.agentsec.inspectors.api_mcp import MCPInspector
+from aidefense.runtime.agentsec.inspectors.api_mcp import (
+    MCPInspector,
+    _mcp_inspect_response_to_decision,
+    _result_to_content_dict,
+    _request_params_for_method,
+)
 from aidefense.runtime.agentsec.decision import Decision
 from aidefense.runtime.agentsec.exceptions import (
     SecurityPolicyError,
     InspectionTimeoutError,
     InspectionNetworkError,
 )
+from aidefense.runtime.models import InspectResponse, Action, Classification
+from aidefense.runtime.mcp_models import MCPInspectResponse
+
+API_KEY_64 = "x" * 64
+
+
+def _mcp_allow():
+    return MCPInspectResponse(
+        result=InspectResponse(
+            classifications=[],
+            is_safe=True,
+            action=Action.ALLOW,
+        ),
+        id=1,
+    )
+
+
+def _mcp_block(reasons=None):
+    return MCPInspectResponse(
+        result=InspectResponse(
+            classifications=[Classification.SECURITY_VIOLATION],
+            is_safe=False,
+            action=Action.BLOCK,
+            explanation=reasons[0] if reasons else "policy violation",
+        ),
+        id=1,
+    )
 
 
 class TestMCPInspectorConstructor:
@@ -89,206 +124,97 @@ class TestMCPInspectorConstructor:
             assert next(inspector._request_id_counter) == 1
             inspector.close()
 
-    def test_http_client_created(self):
-        """Test that HTTP client is created correctly."""
-        inspector = MCPInspector(api_key="test", endpoint="https://test.com")
-        
-        assert inspector._sync_client is not None
-        assert isinstance(inspector._sync_client, httpx.Client)
+    def test_mcp_client_lazy_created(self):
+        """Test that MCP client is created lazily (not in __init__)."""
+        inspector = MCPInspector(api_key=API_KEY_64, endpoint="https://test.com")
+        assert inspector._mcp_client is None
+        assert inspector._mcp_client_lock is not None
         inspector.close()
 
 
 class TestMCPInspectorRequestBuilding:
-    """Test JSON-RPC message building methods."""
+    """Test result/params helpers used for MCP inspection."""
 
-    def test_build_request_message(self):
-        """Test building JSON-RPC 2.0 request message."""
-        inspector = MCPInspector()
-        
-        message = inspector._build_request_message(
-            tool_name="search_docs",
-            arguments={"query": "test", "max_results": 5},
-        )
-        
-        assert message["jsonrpc"] == "2.0"
-        assert message["method"] == "tools/call"
-        assert message["params"]["name"] == "search_docs"
-        assert message["params"]["arguments"] == {"query": "test", "max_results": 5}
-        assert message["id"] == 1
-        inspector.close()
+    def test_result_to_content_dict_string(self):
+        """Test _result_to_content_dict with string result."""
+        out = _result_to_content_dict("Hello, world!")
+        assert out["content"][0]["type"] == "text"
+        assert out["content"][0]["text"] == "Hello, world!"
 
-    def test_build_request_message_increments_id(self):
-        """Test that request IDs increment."""
-        inspector = MCPInspector()
-        
-        msg1 = inspector._build_request_message("tool1", {})
-        msg2 = inspector._build_request_message("tool2", {})
-        msg3 = inspector._build_request_message("tool3", {})
-        
-        assert msg1["id"] == 1
-        assert msg2["id"] == 2
-        assert msg3["id"] == 3
-        inspector.close()
-
-    def test_build_request_message_prompts_get(self):
-        """Test building JSON-RPC 2.0 request message for prompts/get."""
-        inspector = MCPInspector()
-        
-        message = inspector._build_request_message(
-            tool_name="code_review_prompt",
-            arguments={"language": "python", "style": "detailed"},
-            method="prompts/get",
-        )
-        
-        assert message["jsonrpc"] == "2.0"
-        assert message["method"] == "prompts/get"
-        assert message["params"]["name"] == "code_review_prompt"
-        assert message["params"]["arguments"] == {"language": "python", "style": "detailed"}
-        inspector.close()
-
-    def test_build_request_message_resources_read(self):
-        """Test building JSON-RPC 2.0 request message for resources/read."""
-        inspector = MCPInspector()
-        
-        message = inspector._build_request_message(
-            tool_name="file:///path/to/config.yaml",
-            arguments={},
-            method="resources/read",
-        )
-        
-        assert message["jsonrpc"] == "2.0"
-        assert message["method"] == "resources/read"
-        assert message["params"]["uri"] == "file:///path/to/config.yaml"
-        # resources/read doesn't include arguments, only uri
-        assert "arguments" not in message["params"]
-        inspector.close()
-
-    def test_build_response_message_string_result(self):
-        """Test building response message with string result."""
-        inspector = MCPInspector()
-        
-        message = inspector._build_response_message("Hello, world!")
-        
-        assert message["jsonrpc"] == "2.0"
-        assert message["result"]["content"][0]["type"] == "text"
-        assert message["result"]["content"][0]["text"] == "Hello, world!"
-        inspector.close()
-
-    def test_build_response_message_dict_result(self):
-        """Test building response message with dict result."""
-        inspector = MCPInspector()
-        
+    def test_result_to_content_dict_dict(self):
+        """Test _result_to_content_dict with dict result."""
         result = {"status": "success", "data": [1, 2, 3]}
-        message = inspector._build_response_message(result)
-        
-        assert message["result"]["content"][0]["text"] == '{"status": "success", "data": [1, 2, 3]}'
-        inspector.close()
+        out = _result_to_content_dict(result)
+        assert out["content"][0]["text"] == '{"status": "success", "data": [1, 2, 3]}'
 
-    def test_build_response_message_list_result(self):
-        """Test building response message with list result."""
-        inspector = MCPInspector()
-        
-        message = inspector._build_response_message([1, 2, 3])
-        
-        assert message["result"]["content"][0]["text"] == "[1, 2, 3]"
-        inspector.close()
+    def test_result_to_content_dict_list(self):
+        """Test _result_to_content_dict with list result."""
+        out = _result_to_content_dict([1, 2, 3])
+        assert out["content"][0]["text"] == "[1, 2, 3]"
+
+    def test_request_params_tools_call(self):
+        """Test _request_params_for_method for tools/call."""
+        params = _request_params_for_method("tools/call", "search_docs", {"query": "test"})
+        assert params["name"] == "search_docs"
+        assert params["arguments"] == {"query": "test"}
+
+    def test_request_params_resources_read(self):
+        """Test _request_params_for_method for resources/read."""
+        params = _request_params_for_method("resources/read", "file:///config.yaml", {})
+        assert params["uri"] == "file:///config.yaml"
+
+    def test_request_params_prompts_get(self):
+        """Test _request_params_for_method for prompts/get."""
+        params = _request_params_for_method("prompts/get", "code_review", {"lang": "python"})
+        assert params["name"] == "code_review"
+        assert params["arguments"] == {"lang": "python"}
 
 
 class TestMCPInspectorResponseParsing:
-    """Test API response parsing."""
+    """Test _mcp_inspect_response_to_decision mapping."""
 
     def test_parse_allow_response(self):
         """Test parsing Allow response."""
-        inspector = MCPInspector()
-        
-        response = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": True,
-                "action": "Allow",
-                "severity": "NONE_SEVERITY",
-                "rules": [],
-                "classifications": [],
-            },
-            "id": 1,
-        }
-        
-        decision = inspector._parse_mcp_response(response)
-        
+        mcp_resp = _mcp_allow()
+        decision = _mcp_inspect_response_to_decision(mcp_resp)
         assert decision.action == "allow"
-        inspector.close()
 
     def test_parse_block_response_by_action(self):
-        """Test parsing Block response based on action field."""
-        inspector = MCPInspector()
-        
-        response = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": False,
-                "action": "Block",
-                "severity": "HIGH",
-                "rules": [
-                    {
-                        "rule_name": "Code Detection",
-                        "classification": "SECURITY_VIOLATION",
-                    }
-                ],
-                "classifications": ["SECURITY_VIOLATION"],
-            },
-            "id": 1,
-        }
-        
-        decision = inspector._parse_mcp_response(response)
-        
+        """Test parsing Block response."""
+        mcp_resp = _mcp_block(["Code Detection: SECURITY_VIOLATION"])
+        decision = _mcp_inspect_response_to_decision(mcp_resp)
         assert decision.action == "block"
-        assert "Code Detection: SECURITY_VIOLATION" in decision.reasons
-        inspector.close()
+        assert any("SECURITY_VIOLATION" in r for r in decision.reasons)
 
     def test_parse_block_response_by_is_safe(self):
-        """Test parsing block response based on is_safe=false."""
-        inspector = MCPInspector()
-        
-        response = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": False,
-                "action": "Allow",  # Even if action says Allow
-                "severity": "MEDIUM",
-                "rules": [],
-                "explanation": "Potentially unsafe content",
-            },
-            "id": 1,
-        }
-        
-        decision = inspector._parse_mcp_response(response)
-        
-        # Should block because is_safe is False
+        """Test parsing block when is_safe is False."""
+        mcp_resp = MCPInspectResponse(
+            result=InspectResponse(
+                classifications=[],
+                is_safe=False,
+                action=Action.ALLOW,
+                explanation="Potentially unsafe content",
+            ),
+            id=1,
+        )
+        decision = _mcp_inspect_response_to_decision(mcp_resp)
         assert decision.action == "block"
         assert "Potentially unsafe content" in decision.reasons
-        inspector.close()
 
     def test_parse_response_with_attack_technique(self):
-        """Test parsing response with attack technique."""
-        inspector = MCPInspector()
-        
-        response = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": False,
-                "action": "Block",
-                "severity": "HIGH",
-                "attack_technique": "SQL_INJECTION",
-                "rules": [],
-            },
-            "id": 1,
-        }
-        
-        decision = inspector._parse_mcp_response(response)
-        
+        """Test parsing response with attack technique in explanation."""
+        mcp_resp = MCPInspectResponse(
+            result=InspectResponse(
+                classifications=[Classification.SECURITY_VIOLATION],
+                is_safe=False,
+                action=Action.BLOCK,
+                explanation="SQL_INJECTION detected",
+            ),
+            id=1,
+        )
+        decision = _mcp_inspect_response_to_decision(mcp_resp)
         assert decision.action == "block"
         assert any("SQL_INJECTION" in r for r in decision.reasons)
-        inspector.close()
 
 
 class TestMCPInspectorInspectRequest:
@@ -315,175 +241,113 @@ class TestMCPInspectorInspectRequest:
     def test_inspect_request_allow(self):
         """Test inspect_request returns allow for safe request."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": True,
-                "action": "Allow",
-                "severity": "NONE_SEVERITY",
-                "rules": [],
-            },
-            "id": 1,
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        with patch.object(inspector._sync_client, 'post', return_value=mock_response):
+        mock_client = MagicMock()
+        mock_client.inspect_tool_call.return_value = _mcp_allow()
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = inspector.inspect_request(
                 tool_name="search_docs",
                 arguments={"query": "safe query"},
                 metadata={},
             )
-            
             assert decision.action == "allow"
-        
         inspector.close()
 
     def test_inspect_request_block(self):
         """Test inspect_request returns block for unsafe request."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": False,
-                "action": "Block",
-                "severity": "HIGH",
-                "rules": [{"rule_name": "Violence", "classification": "SAFETY_VIOLATION"}],
-            },
-            "id": 1,
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        with patch.object(inspector._sync_client, 'post', return_value=mock_response):
+        mock_client = MagicMock()
+        mock_client.inspect_tool_call.return_value = _mcp_block(["Violence: SAFETY_VIOLATION"])
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = inspector.inspect_request(
                 tool_name="search_docs",
                 arguments={"query": "how to make a bomb"},
                 metadata={},
             )
-            
             assert decision.action == "block"
-        
         inspector.close()
 
     def test_inspect_request_api_error_fail_open_true(self):
         """Test inspect_request allows on API error when fail_open=True."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
             fail_open=True,
         )
-        
-        with patch.object(inspector._sync_client, 'post', side_effect=httpx.ConnectError("Connection failed")):
+        mock_client = MagicMock()
+        mock_client.inspect_tool_call.side_effect = httpx.ConnectError("Connection failed")
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = inspector.inspect_request(
                 tool_name="test_tool",
                 arguments={},
                 metadata={},
             )
-            
             assert decision.action == "allow"
-            assert "fail_open=True" in decision.reasons[0]
-        
+            assert any("fail_open" in r for r in decision.reasons)
         inspector.close()
 
     def test_inspect_request_api_error_fail_open_false(self):
         """Test inspect_request raises InspectionNetworkError when fail_open=False."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
             fail_open=False,
         )
-        
-        with patch.object(inspector._sync_client, 'post', side_effect=httpx.ConnectError("Connection failed")):
-            # Should raise InspectionNetworkError for network errors
+        mock_client = MagicMock()
+        mock_client.inspect_tool_call.side_effect = httpx.ConnectError("Connection failed")
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             with pytest.raises(InspectionNetworkError):
                 inspector.inspect_request(
                     tool_name="test_tool",
                     arguments={},
                     metadata={},
                 )
-        
         inspector.close()
 
     def test_inspect_request_prompts_get(self):
         """Test inspect_request with prompts/get method."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": True,
-                "action": "Allow",
-                "severity": "NONE_SEVERITY",
-                "rules": [],
-            },
-            "id": 1,
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        with patch.object(inspector._sync_client, 'post', return_value=mock_response) as mock_post:
+        mock_client = MagicMock()
+        mock_client.inspect.return_value = _mcp_allow()
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = inspector.inspect_request(
                 tool_name="code_review_prompt",
                 arguments={"language": "python"},
                 metadata={},
                 method="prompts/get",
             )
-            
             assert decision.action == "allow"
-            # Verify the request was built with prompts/get method
-            call_args = mock_post.call_args
-            request_body = call_args.kwargs.get('json') or call_args[1].get('json')
-            assert request_body["method"] == "prompts/get"
-        
+            mock_client.inspect.assert_called_once()
+            call_msg = mock_client.inspect.call_args[0][0]
+            assert call_msg.method == "prompts/get"
         inspector.close()
 
     def test_inspect_request_resources_read(self):
         """Test inspect_request with resources/read method."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": True,
-                "action": "Allow",
-                "severity": "NONE_SEVERITY",
-                "rules": [],
-            },
-            "id": 1,
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        with patch.object(inspector._sync_client, 'post', return_value=mock_response) as mock_post:
+        mock_client = MagicMock()
+        mock_client.inspect_resource_read.return_value = _mcp_allow()
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = inspector.inspect_request(
                 tool_name="file:///config.yaml",
                 arguments={},
                 metadata={},
                 method="resources/read",
             )
-            
             assert decision.action == "allow"
-            # Verify the request was built with resources/read method
-            call_args = mock_post.call_args
-            request_body = call_args.kwargs.get('json') or call_args[1].get('json')
-            assert request_body["method"] == "resources/read"
-            assert request_body["params"]["uri"] == "file:///config.yaml"
-        
+            mock_client.inspect_resource_read.assert_called_once()
+            assert mock_client.inspect_resource_read.call_args[1]["uri"] == "file:///config.yaml"
         inspector.close()
 
 
@@ -512,67 +376,46 @@ class TestMCPInspectorInspectResponse:
     def test_inspect_response_allow(self):
         """Test inspect_response returns allow for safe response."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": True,
-                "action": "Allow",
-                "severity": "NONE_SEVERITY",
-                "rules": [],
-            },
-            "id": 1,
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        with patch.object(inspector._sync_client, 'post', return_value=mock_response):
+        mock_client = MagicMock()
+        mock_client.inspect_response.return_value = _mcp_allow()
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = inspector.inspect_response(
                 tool_name="search_docs",
                 arguments={},
                 result="Safe search results",
                 metadata={},
             )
-            
             assert decision.action == "allow"
-        
         inspector.close()
 
     def test_inspect_response_block_pii(self):
         """Test inspect_response blocks response with PII."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": False,
-                "action": "Block",
-                "severity": "HIGH",
-                "rules": [{"rule_name": "PII", "classification": "PRIVACY_VIOLATION"}],
-                "classifications": ["PRIVACY_VIOLATION"],
-            },
-            "id": 1,
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        with patch.object(inspector._sync_client, 'post', return_value=mock_response):
+        mock_client = MagicMock()
+        mock_client.inspect_response.return_value = MCPInspectResponse(
+            result=InspectResponse(
+                classifications=[Classification.PRIVACY_VIOLATION],
+                is_safe=False,
+                action=Action.BLOCK,
+                explanation="PII: PRIVACY_VIOLATION",
+            ),
+            id=1,
+        )
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = inspector.inspect_response(
                 tool_name="get_user",
                 arguments={},
                 result="SSN: 123-45-6789",
                 metadata={},
             )
-            
             assert decision.action == "block"
-            assert "PII: PRIVACY_VIOLATION" in decision.reasons
-        
+            assert any("PRIVACY_VIOLATION" in r or "PII" in r for r in decision.reasons)
         inspector.close()
 
 
@@ -622,131 +465,56 @@ class TestMCPInspectorAsync:
     async def test_ainspect_request_error_handling(self):
         """Test ainspect_request error handling with fail_open=True."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
             fail_open=True,
         )
-        
-        # Mock httpx.AsyncClient to raise an exception
-        async def mock_post(*args, **kwargs):
-            raise httpx.ConnectError("Connection failed")
-        
-        with patch('aidefense.runtime.agentsec.inspectors.api_mcp.httpx.AsyncClient') as mock_client_class:
-            mock_client = MagicMock()
-            mock_client.post = mock_post
-            
-            async def aenter_mock(*args):
-                return mock_client
-            
-            async def aexit_mock(*args):
-                return None
-            
-            mock_client_class.return_value.__aenter__ = aenter_mock
-            mock_client_class.return_value.__aexit__ = aexit_mock
-            
+        mock_client = MagicMock()
+        mock_client.inspect_tool_call.side_effect = httpx.ConnectError("Connection failed")
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = await inspector.ainspect_request(
                 tool_name="test_tool",
                 arguments={},
                 metadata={},
             )
-            
             assert decision.action == "allow"
-            assert "fail_open=True" in decision.reasons[0]
-        
+            assert any("fail_open" in r for r in decision.reasons)
         inspector.close()
 
     @pytest.mark.asyncio
     async def test_ainspect_request_prompts_get(self):
         """Test ainspect_request with prompts/get method."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": True,
-                "action": "Allow",
-                "severity": "NONE_SEVERITY",
-                "rules": [],
-            },
-            "id": 1,
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        async def mock_post(*args, **kwargs):
-            return mock_response
-        
-        with patch('aidefense.runtime.agentsec.inspectors.api_mcp.httpx.AsyncClient') as mock_client_class:
-            mock_client = MagicMock()
-            mock_client.post = mock_post
-            
-            async def aenter_mock(*args):
-                return mock_client
-            
-            async def aexit_mock(*args):
-                return None
-            
-            mock_client_class.return_value.__aenter__ = aenter_mock
-            mock_client_class.return_value.__aexit__ = aexit_mock
-            
+        mock_client = MagicMock()
+        mock_client.inspect.return_value = _mcp_allow()
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = await inspector.ainspect_request(
                 tool_name="code_review_prompt",
                 arguments={"language": "python"},
                 metadata={},
                 method="prompts/get",
             )
-            
             assert decision.action == "allow"
-        
         inspector.close()
 
     @pytest.mark.asyncio
     async def test_ainspect_request_resources_read(self):
         """Test ainspect_request with resources/read method."""
         inspector = MCPInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="https://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "jsonrpc": "2.0",
-            "result": {
-                "is_safe": True,
-                "action": "Allow",
-                "severity": "NONE_SEVERITY",
-                "rules": [],
-            },
-            "id": 1,
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        async def mock_post(*args, **kwargs):
-            return mock_response
-        
-        with patch('aidefense.runtime.agentsec.inspectors.api_mcp.httpx.AsyncClient') as mock_client_class:
-            mock_client = MagicMock()
-            mock_client.post = mock_post
-            
-            async def aenter_mock(*args):
-                return mock_client
-            
-            async def aexit_mock(*args):
-                return None
-            
-            mock_client_class.return_value.__aenter__ = aenter_mock
-            mock_client_class.return_value.__aexit__ = aexit_mock
-            
+        mock_client = MagicMock()
+        mock_client.inspect_resource_read.return_value = _mcp_allow()
+        with patch.object(inspector, "_get_mcp_client", return_value=mock_client):
             decision = await inspector.ainspect_request(
                 tool_name="file:///config.yaml",
                 arguments={},
                 metadata={},
                 method="resources/read",
             )
-            
             assert decision.action == "allow"
-        
         inspector.close()

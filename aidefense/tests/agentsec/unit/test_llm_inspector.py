@@ -1,6 +1,7 @@
 """Tests for LLMInspector with Cisco AI Defense API (Task 3.1).
 
 Enhanced with error handling tests for Task Group 1 (Error Handling spec).
+LLMInspector uses ChatInspectionClient; tests mock _get_chat_client.
 """
 
 import json
@@ -16,7 +17,32 @@ from aidefense.runtime.agentsec.exceptions import (
     InspectionNetworkError,
     AgentsecError,
 )
-from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
+from aidefense.runtime.agentsec.inspectors.api_llm import (
+    LLMInspector,
+    _messages_to_runtime,
+    _metadata_to_runtime,
+)
+from aidefense.runtime.models import InspectResponse, Action, Classification
+
+# 64-char API key required by RuntimeAuth when client is created
+API_KEY_64 = "x" * 64
+
+
+def _allow_response():
+    return InspectResponse(
+        classifications=[],
+        is_safe=True,
+        action=Action.ALLOW,
+    )
+
+
+def _block_response(reasons=None):
+    return InspectResponse(
+        classifications=[Classification.SECURITY_VIOLATION],
+        is_safe=False,
+        action=Action.BLOCK,
+        explanation=reasons[0] if reasons else "policy violation",
+    )
 
 
 class TestLLMInspector:
@@ -25,83 +51,62 @@ class TestLLMInspector:
     def test_successful_api_call_returns_decision(self):
         """Test successful API call returns Decision from response."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "action": "allow",
-            "reasons": [],
-        }
-        mock_response.raise_for_status = MagicMock()
-        
-        with patch.object(inspector._sync_client, "post", return_value=mock_response):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.return_value = _allow_response()
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             decision = inspector.inspect_conversation(
                 messages=[{"role": "user", "content": "Hello"}],
                 metadata={"user": "test"},
             )
-        
         assert decision.action == "allow"
 
     def test_timeout_handling(self):
         """Test timeout handling with configurable timeout."""
-        import httpx
-        
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             timeout_ms=500,
             fail_open=True,
         )
-        
-        with patch.object(
-            inspector._sync_client,
-            "post",
-            side_effect=httpx.TimeoutException("timeout"),
-        ):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.side_effect = httpx.TimeoutException("timeout")
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             decision = inspector.inspect_conversation(
                 messages=[{"role": "user", "content": "Hello"}],
                 metadata={},
             )
-        
-        # fail_open=True should allow
         assert decision.action == "allow"
 
     def test_fail_open_true_allows_on_error(self):
         """Test fail_open=True allows on API error."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=True,
         )
-        
-        with patch.object(
-            inspector._sync_client,
-            "post",
-            side_effect=Exception("API error"),
-        ):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.side_effect = Exception("API error")
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             decision = inspector.inspect_conversation(
                 messages=[{"role": "user", "content": "test"}],
                 metadata={},
             )
-        
         assert decision.action == "allow"
-        assert "API error" in decision.reasons[0] or "fail_open" in decision.reasons[0]
+        assert any("API error" in r or "fail_open" in r for r in decision.reasons)
 
     def test_fail_open_false_raises_on_error(self):
         """Test fail_open=False raises SecurityPolicyError on API error."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=False,
         )
-        
-        with patch.object(
-            inspector._sync_client,
-            "post",
-            side_effect=Exception("API error"),
-        ):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.side_effect = Exception("API error")
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             with pytest.raises(SecurityPolicyError):
                 inspector.inspect_conversation(
                     messages=[{"role": "user", "content": "test"}],
@@ -112,51 +117,36 @@ class TestLLMInspector:
     async def test_async_inspect_conversation(self):
         """Test async ainspect_conversation() works correctly."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
         )
-        
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "action": "block",
-            "reasons": ["policy violation"],
-        }
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
-        
-        # ainspect_conversation creates a fresh AsyncClient per request,
-        # so we need to patch httpx.AsyncClient itself
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__.return_value = mock_client
-        mock_client.__aexit__.return_value = None
-        
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.return_value = _block_response(["policy violation"])
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             decision = await inspector.ainspect_conversation(
                 messages=[{"role": "user", "content": "test"}],
                 metadata={},
             )
-        
         assert decision.action == "block"
-        assert "policy violation" in decision.reasons
+        assert any("policy violation" in r or "SECURITY_VIOLATION" in r for r in decision.reasons)
 
     def test_request_payload_includes_messages_metadata(self):
-        """Test request payload includes messages and metadata."""
-        inspector = LLMInspector(
-            api_key="test-key",
-            endpoint="http://test.example.com",
-        )
-        
+        """Test message/metadata adapters produce correct runtime structures."""
         messages = [
             {"role": "system", "content": "You are a helper"},
             {"role": "user", "content": "Hello"},
         ]
         metadata = {"user": "test_user", "src_app": "test_app"}
-        
-        payload = inspector._build_request_payload(messages, metadata)
-        
-        assert payload["messages"] == messages
-        assert payload["metadata"] == metadata
+        runtime_messages = _messages_to_runtime(messages)
+        runtime_metadata = _metadata_to_runtime(metadata)
+        assert len(runtime_messages) == 2
+        assert runtime_messages[0].role.value == "system"
+        assert runtime_messages[0].content == "You are a helper"
+        assert runtime_messages[1].role.value == "user"
+        assert runtime_messages[1].content == "Hello"
+        assert runtime_metadata is not None
+        assert runtime_metadata.user == "test_user"
+        assert runtime_metadata.src_app == "test_app"
 
 
 class TestLLMInspectorNoConfig:
@@ -180,7 +170,7 @@ class TestLLMInspectorErrorHandling:
     def test_handle_error_fail_open_true_returns_allow(self):
         """Test _handle_error with fail_open=True returns allow decision."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=True,
         )
@@ -193,7 +183,7 @@ class TestLLMInspectorErrorHandling:
     def test_handle_error_fail_open_false_raises_security_error(self):
         """Test _handle_error with fail_open=False raises SecurityPolicyError."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=False,
         )
@@ -207,132 +197,102 @@ class TestLLMInspectorErrorHandling:
     def test_httpx_timeout_exception_handling(self):
         """Test handling of httpx.TimeoutException."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=True,
         )
-        
-        with patch.object(
-            inspector._sync_client,
-            "post",
-            side_effect=httpx.TimeoutException("Connection timed out"),
-        ):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.side_effect = httpx.TimeoutException("Connection timed out")
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             decision = inspector.inspect_conversation(
                 messages=[{"role": "user", "content": "test"}],
                 metadata={},
             )
-        
         assert decision.action == "allow"
 
     def test_httpx_connect_error_handling(self):
         """Test handling of httpx.ConnectError."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=True,
         )
-        
-        with patch.object(
-            inspector._sync_client,
-            "post",
-            side_effect=httpx.ConnectError("Failed to connect"),
-        ):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.side_effect = httpx.ConnectError("Failed to connect")
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             decision = inspector.inspect_conversation(
                 messages=[{"role": "user", "content": "test"}],
                 metadata={},
             )
-        
         assert decision.action == "allow"
 
     def test_httpx_http_status_error_handling(self):
         """Test handling of httpx.HTTPStatusError (non-200 responses)."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=True,
         )
-        
-        # Create a mock request and response for HTTPStatusError
         mock_request = MagicMock()
         mock_response = MagicMock()
         mock_response.status_code = 500
-        
-        with patch.object(
-            inspector._sync_client,
-            "post",
-            side_effect=httpx.HTTPStatusError(
-                "Server error",
-                request=mock_request,
-                response=mock_response,
-            ),
-        ):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.side_effect = httpx.HTTPStatusError(
+            "Server error",
+            request=mock_request,
+            response=mock_response,
+        )
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             decision = inspector.inspect_conversation(
                 messages=[{"role": "user", "content": "test"}],
                 metadata={},
             )
-        
         assert decision.action == "allow"
 
     def test_malformed_json_response_handling(self):
         """Test handling of malformed JSON responses."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=True,
         )
-        
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.side_effect = json.JSONDecodeError("Invalid JSON", "", 0)
-        
-        with patch.object(inspector._sync_client, "post", return_value=mock_response):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.side_effect = json.JSONDecodeError("Invalid JSON", "", 0)
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             decision = inspector.inspect_conversation(
                 messages=[{"role": "user", "content": "test"}],
                 metadata={},
             )
-        
         assert decision.action == "allow"
 
     @pytest.mark.asyncio
     async def test_async_httpx_timeout_handling(self):
         """Test async handling of httpx.TimeoutException."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=True,
         )
-        
-        # Create mock async client that raises timeout
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = httpx.TimeoutException("Async timeout")
-        mock_client.__aenter__.return_value = mock_client
-        mock_client.__aexit__.return_value = None
-        
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.side_effect = httpx.TimeoutException("Async timeout")
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             decision = await inspector.ainspect_conversation(
                 messages=[{"role": "user", "content": "test"}],
                 metadata={},
             )
-        
         assert decision.action == "allow"
 
     @pytest.mark.asyncio
     async def test_async_fail_open_false_raises(self):
         """Test async fail_open=False raises InspectionNetworkError for network errors."""
         inspector = LLMInspector(
-            api_key="test-key",
+            api_key=API_KEY_64,
             endpoint="http://test.example.com",
             fail_open=False,
         )
-        
-        # Create mock async client that raises error
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = httpx.ConnectError("Connection refused")
-        mock_client.__aenter__.return_value = mock_client
-        mock_client.__aexit__.return_value = None
-        
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            # Should raise InspectionNetworkError (a typed AgentsecError)
+        mock_client = MagicMock()
+        mock_client.inspect_conversation.side_effect = httpx.ConnectError("Connection refused")
+        with patch.object(inspector, "_get_chat_client", return_value=mock_client):
             with pytest.raises(InspectionNetworkError):
                 await inspector.ainspect_conversation(
                     messages=[{"role": "user", "content": "test"}],
