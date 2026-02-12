@@ -190,7 +190,7 @@ def _load_provider_config(provider: str, mode: str) -> Dict[str, Optional[str]]:
     Load provider-specific configuration from environment variables.
     
     Args:
-        provider: Provider name (openai, azure_openai, vertexai, bedrock)
+        provider: Provider name (e.g. openai, azure_openai, vertexai, bedrock, cohere)
         mode: Configuration mode (api or gateway)
         
     Returns:
@@ -202,6 +202,8 @@ def _load_provider_config(provider: str, mode: str) -> Dict[str, Optional[str]]:
         "azure_openai": "AZURE_OPENAI",
         "vertexai": "VERTEXAI",
         "bedrock": "BEDROCK",
+        "cohere": "COHERE",
+        "mistral": "MISTRAL",
     }
     
     prefix = provider_prefix_map.get(provider, provider.upper())
@@ -277,12 +279,12 @@ def load_env_config() -> Dict[str, Any]:
     
     # Load provider-specific gateway configuration
     provider_gateway_config = {}
-    for provider in ["openai", "azure_openai", "vertexai", "bedrock"]:
+    for provider in ["openai", "azure_openai", "vertexai", "bedrock", "cohere", "mistral"]:
         provider_gateway_config[provider] = _load_provider_config(provider, "gateway")
     
     # Load provider-specific API configuration
     provider_api_config = {}
-    for provider in ["openai", "azure_openai", "vertexai", "bedrock"]:
+    for provider in ["openai", "azure_openai", "vertexai", "bedrock", "cohere", "mistral"]:
         config = _load_provider_config(provider, "api")
         # Fall back to standard env vars for API keys
         if not config["api_key"]:
@@ -290,6 +292,10 @@ def load_env_config() -> Dict[str, Any]:
                 config["api_key"] = os.environ.get("OPENAI_API_KEY")
             elif provider == "azure_openai":
                 config["api_key"] = os.environ.get("AZURE_OPENAI_API_KEY")
+            elif provider == "cohere":
+                config["api_key"] = os.environ.get("COHERE_API_KEY")
+            elif provider == "mistral":
+                config["api_key"] = os.environ.get("MISTRAL_API_KEY")
         provider_api_config[provider] = config
     
     return {

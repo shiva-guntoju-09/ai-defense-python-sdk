@@ -18,6 +18,8 @@ SIMPLE_DIR = Path(__file__).parent.parent.parent
 EXAMPLES = [
     "basic_protection",
     "openai_example",
+    "cohere_example",
+    "mistral_example",
     "streaming_example",
     "mcp_example",
     "simple_strands_bedrock",

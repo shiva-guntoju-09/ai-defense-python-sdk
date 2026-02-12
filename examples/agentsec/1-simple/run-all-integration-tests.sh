@@ -29,6 +29,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXAMPLES=(
     "basic_protection.py"
     "openai_example.py"
+    "cohere_example.py"
+    "mistral_example.py"
     "streaming_example.py"
     "mcp_example.py"
     "gateway_mode_example.py"

@@ -15,6 +15,12 @@ cisco-aidefense-sdk = { path = "../../..", develop = true }
 # OpenAI Python client
 openai = ">=1.0.0"
 
+# Cohere Python SDK (v2 chat)
+cohere = ">=5.0.0"
+
+# Mistral AI Python SDK
+mistralai = ">=1.0.0"
+
 # Strands Agents SDK for building AI agents
 strands-agents = ">=0.1.0"
 

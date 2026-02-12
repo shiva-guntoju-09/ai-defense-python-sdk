@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 _state_lock = threading.Lock()
 
 # Supported LLM providers
-SUPPORTED_PROVIDERS = ["openai", "azure_openai", "vertexai", "bedrock", "google_genai"]
+SUPPORTED_PROVIDERS = ["openai", "azure_openai", "vertexai", "bedrock", "google_genai", "cohere", "mistral"]
 
 # Valid configuration values
 VALID_API_MODES = {"off", "monitor", "enforce"}
@@ -76,6 +76,8 @@ _provider_gateway_config: Dict[str, Dict[str, Optional[str]]] = {
     "vertexai": {"url": None, "api_key": None},
     "bedrock": {"url": None, "api_key": None},
     "google_genai": {"url": None, "api_key": None},
+    "cohere": {"url": None, "api_key": None},
+    "mistral": {"url": None, "api_key": None},
 }
 
 # Provider-specific API configuration (for direct calls in API mode)
@@ -85,6 +87,8 @@ _provider_api_config: Dict[str, Dict[str, Optional[str]]] = {
     "vertexai": {"url": None, "api_key": None},
     "bedrock": {"url": None, "api_key": None},
     "google_genai": {"url": None, "api_key": None},
+    "cohere": {"url": None, "api_key": None},
+    "mistral": {"url": None, "api_key": None},
 }
 
 
@@ -257,7 +261,7 @@ def get_provider_gateway_url(provider: str) -> Optional[str]:
     Get gateway URL for a specific provider.
     
     Args:
-        provider: Provider name (openai, azure_openai, vertexai, bedrock)
+        provider: Provider name (e.g. openai, azure_openai, vertexai, bedrock, google_genai, cohere)
         
     Returns:
         Gateway URL or None if not configured
@@ -270,7 +274,7 @@ def get_provider_gateway_api_key(provider: str) -> Optional[str]:
     Get gateway API key for a specific provider.
     
     Args:
-        provider: Provider name (openai, azure_openai, vertexai, bedrock)
+        provider: Provider name (e.g. openai, azure_openai, vertexai, bedrock, google_genai, cohere)
         
     Returns:
         Gateway API key or None if not configured
@@ -283,7 +287,7 @@ def get_provider_api_url(provider: str) -> Optional[str]:
     Get API URL for a specific provider (for direct calls in API mode).
     
     Args:
-        provider: Provider name (openai, azure_openai, vertexai, bedrock)
+        provider: Provider name (e.g. openai, azure_openai, vertexai, bedrock, google_genai, cohere)
         
     Returns:
         API URL or None if not configured
@@ -296,7 +300,7 @@ def get_provider_api_key(provider: str) -> Optional[str]:
     Get API key for a specific provider (for direct calls in API mode).
     
     Args:
-        provider: Provider name (openai, azure_openai, vertexai, bedrock)
+        provider: Provider name (e.g. openai, azure_openai, vertexai, bedrock, google_genai, cohere)
         
     Returns:
         API key or None if not configured
@@ -309,7 +313,7 @@ def set_provider_gateway_config(provider: str, url: Optional[str], api_key: Opti
     Set gateway configuration for a specific provider.
     
     Args:
-        provider: Provider name (openai, azure_openai, vertexai, bedrock)
+        provider: Provider name (e.g. openai, azure_openai, vertexai, bedrock, google_genai, cohere)
         url: Gateway URL
         api_key: Gateway API key
     """
@@ -322,7 +326,7 @@ def set_provider_api_config(provider: str, url: Optional[str], api_key: Optional
     Set API configuration for a specific provider (for direct calls in API mode).
     
     Args:
-        provider: Provider name (openai, azure_openai, vertexai, bedrock)
+        provider: Provider name (e.g. openai, azure_openai, vertexai, bedrock, google_genai, cohere)
         url: API URL
         api_key: API key
     """

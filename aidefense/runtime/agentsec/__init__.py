@@ -104,6 +104,8 @@ def _apply_patches(llm_mode: str, mcp_mode: str) -> None:
         patch_mcp,
         patch_vertexai,
         patch_google_genai,
+        patch_cohere,
+        patch_mistral,
     )
     
     # Patch LLM clients if not off
@@ -112,6 +114,8 @@ def _apply_patches(llm_mode: str, mcp_mode: str) -> None:
         patch_bedrock()
         patch_vertexai()
         patch_google_genai()
+        patch_cohere()
+        patch_mistral()
     
     # Patch MCP client if not off
     if mcp_mode != "off":
@@ -462,7 +466,7 @@ def _protect_impl(
     provider_gateway_config = {}
     provider_api_config = {}
     
-    for provider in ["openai", "azure_openai", "vertexai", "bedrock", "google_genai"]:
+    for provider in ["openai", "azure_openai", "vertexai", "bedrock", "google_genai", "cohere", "mistral"]:
         # Gateway config from providers parameter or env
         if providers and provider in providers:
             provider_config = providers[provider]

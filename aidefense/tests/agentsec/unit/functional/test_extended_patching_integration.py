@@ -83,3 +83,79 @@ class TestBedrockIntegration:
             
             patched = get_patched_clients()
             assert "bedrock" not in patched
+
+
+class TestCohereIntegration:
+    """Test Cohere integration with protect()."""
+
+    @patch("aidefense.runtime.agentsec.patchers.cohere.safe_import")
+    @patch("aidefense.runtime.agentsec.patchers.cohere.wrapt")
+    def test_cohere_patched_when_library_installed(self, mock_wrapt, mock_safe_import):
+        """Test that cohere appears in patched clients when library is installed."""
+        mock_module = MagicMock()
+        mock_safe_import.return_value = mock_module
+
+        with patch("aidefense.runtime.agentsec.patchers.openai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.bedrock.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.vertexai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.mcp.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.google_genai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.mistral.safe_import", return_value=None):
+
+            protect(api_mode_llm="monitor")
+
+            patched = get_patched_clients()
+            assert "cohere" in patched
+
+    @patch("aidefense.runtime.agentsec.patchers.cohere.safe_import", return_value=None)
+    def test_cohere_not_patched_when_library_missing(self, mock_safe_import):
+        """Test that cohere is not in patched clients when library not installed."""
+        with patch("aidefense.runtime.agentsec.patchers.openai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.bedrock.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.vertexai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.mcp.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.google_genai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.mistral.safe_import", return_value=None):
+
+            protect(api_mode_llm="monitor")
+
+            patched = get_patched_clients()
+            assert "cohere" not in patched
+
+
+class TestMistralIntegration:
+    """Test Mistral integration with protect()."""
+
+    @patch("aidefense.runtime.agentsec.patchers.mistral.safe_import")
+    @patch("aidefense.runtime.agentsec.patchers.mistral.wrapt")
+    def test_mistral_patched_when_library_installed(self, mock_wrapt, mock_safe_import):
+        """Test that mistral appears in patched clients when library is installed."""
+        mock_module = MagicMock()
+        mock_safe_import.return_value = mock_module
+
+        with patch("aidefense.runtime.agentsec.patchers.openai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.bedrock.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.vertexai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.mcp.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.google_genai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.cohere.safe_import", return_value=None):
+
+            protect(api_mode_llm="monitor")
+
+            patched = get_patched_clients()
+            assert "mistral" in patched
+
+    @patch("aidefense.runtime.agentsec.patchers.mistral.safe_import", return_value=None)
+    def test_mistral_not_patched_when_library_missing(self, mock_safe_import):
+        """Test that mistral is not in patched clients when library not installed."""
+        with patch("aidefense.runtime.agentsec.patchers.openai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.bedrock.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.vertexai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.mcp.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.google_genai.safe_import", return_value=None), \
+             patch("aidefense.runtime.agentsec.patchers.cohere.safe_import", return_value=None):
+
+            protect(api_mode_llm="monitor")
+
+            patched = get_patched_clients()
+            assert "mistral" not in patched

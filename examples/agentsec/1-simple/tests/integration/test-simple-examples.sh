@@ -283,6 +283,8 @@ echo ""
 # Script paths are relative to SIMPLE_DIR since we run from there
 run_example_tests "basic_protection.py" "basic_protection.py"
 run_example_tests "openai_example.py" "openai_example.py"
+run_example_tests "cohere_example.py" "cohere_example.py"
+run_example_tests "mistral_example.py" "mistral_example.py"
 run_example_tests "streaming_example.py" "streaming_example.py"
 run_example_tests "mcp_example.py" "mcp_example.py"
 run_example_tests "gateway_mode_example.py" "gateway_mode_example.py"

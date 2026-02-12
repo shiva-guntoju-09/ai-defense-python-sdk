@@ -102,6 +102,8 @@ The `.env.example` file contains all variables organized by which examples need 
 | **Azure OpenAI** | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION` | `AGENTSEC_AZURE_OPENAI_GATEWAY_URL`, `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` |
 | **AWS Bedrock** | `AWS_REGION` + auth (`AWS_PROFILE` or keys) | `AGENTSEC_BEDROCK_GATEWAY_URL` + AWS auth |
 | **GCP Vertex AI** | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` + ADC | `AGENTSEC_VERTEXAI_GATEWAY_URL` + ADC |
+| **Cohere** | `COHERE_API_KEY` | `AGENTSEC_COHERE_GATEWAY_URL`, `AGENTSEC_COHERE_GATEWAY_API_KEY` |
+| **Mistral AI** | `MISTRAL_API_KEY` | `AGENTSEC_MISTRAL_GATEWAY_URL`, `AGENTSEC_MISTRAL_GATEWAY_API_KEY` |
 | **MCP Tools** | `MCP_SERVER_URL`, `MCP_TIMEOUT` + MCP API vars | `AGENTSEC_MCP_GATEWAY_URL` |
 
 ### By Example Path
@@ -109,6 +111,8 @@ The `.env.example` file contains all variables organized by which examples need 
 | Example | AI Defense | LLM Provider | Extra (Deploy Only) |
 |---------|------------|--------------|---------------------|
 | `1-simple/openai_example.py` | API or Gateway | OpenAI | - |
+| `1-simple/cohere_example.py` | API or Gateway | Cohere | - |
+| `1-simple/mistral_example.py` | API or Gateway | Mistral AI | - |
 | `1-simple/simple_strands_bedrock.py` | API or Gateway | Bedrock | - |
 | `1-simple/mcp_example.py` | API or Gateway | OpenAI + MCP | `MCP_SERVER_URL`, `MCP_TIMEOUT` |
 | `2-agent-frameworks/*/--openai` | API or Gateway | OpenAI | - |
@@ -127,7 +131,7 @@ The `.env.example` file contains all variables organized by which examples need 
 
 | Category | Description | Examples |
 |----------|-------------|----------|
-| **1-simple/** | Standalone examples for core features | 7 examples |
+| **1-simple/** | Standalone examples for core features | 9 examples |
 | **2-agent-frameworks/** | Agent frameworks with MCP tools | 6 frameworks |
 | **3-agent-runtimes/** | Cloud deployment with AI Defense | 3 runtimes, 9 modes |
 
@@ -161,6 +165,8 @@ agentsec automatically patches these LLM client libraries:
 | **AWS Bedrock** | `boto3` | `converse()`, `converse_stream()` |
 | **Google Vertex AI** | `google-cloud-aiplatform` | `ChatVertexAI`, `generate_content()` |
 | **Google GenAI** | `google-genai` | `generate_content()`, `generate_content_async()` |
+| **Cohere** | `cohere` | `V2Client.chat()`, `V2Client.chat_stream()`, `AsyncV2Client.chat()`, `AsyncV2Client.chat_stream()` |
+| **Mistral AI** | `mistralai` | `Chat.complete()`, `Chat.stream()`, `Chat.complete_async()`, `Chat.stream_async()` |
 
 ### MCP Tool Inspection
 
@@ -208,6 +214,8 @@ These prerequisites apply to both **Agent Frameworks** and **Agent Runtimes**.
 | **Azure OpenAI** | If using | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME` |
 | **AWS Bedrock** | If using | AWS credentials (profile, SSO, or env vars) |
 | **Vertex AI** | If using | GCP ADC (`gcloud auth application-default login`) |
+| **Cohere** | If using | `COHERE_API_KEY` |
+| **Mistral AI** | If using | `MISTRAL_API_KEY` |
 
 #### Gateway Mode Prerequisites
 
@@ -217,6 +225,8 @@ These prerequisites apply to both **Agent Frameworks** and **Agent Runtimes**.
 | **Azure OpenAI** | `AGENTSEC_AZURE_OPENAI_GATEWAY_URL` | `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` |
 | **AWS Bedrock** | `AGENTSEC_BEDROCK_GATEWAY_URL` | AWS Sig V4 (no API key) |
 | **Vertex AI** | `AGENTSEC_VERTEXAI_GATEWAY_URL` | ADC OAuth2 (no API key) |
+| **Cohere** | `AGENTSEC_COHERE_GATEWAY_URL` | `AGENTSEC_COHERE_GATEWAY_API_KEY` |
+| **Mistral AI** | `AGENTSEC_MISTRAL_GATEWAY_URL` | `AGENTSEC_MISTRAL_GATEWAY_API_KEY` |
 
 ---
 
@@ -331,6 +341,8 @@ Standalone examples demonstrating core agentsec features without agent framework
 |---------|-------------|:-------:|:--------:|
 | `basic_protection.py` | Minimal setup - modes, patched clients | ✅ | ✅ |
 | `openai_example.py` | OpenAI client with automatic inspection | ✅ | ✅ |
+| `cohere_example.py` | Cohere v2 client with automatic inspection | ✅ | ✅ |
+| `mistral_example.py` | Mistral AI client with automatic inspection | ✅ | ✅ |
 | `streaming_example.py` | Streaming responses with chunk inspection | ✅ | ✅ |
 | `mcp_example.py` | MCP tool call inspection (pre & post) | ✅ | ✅ |
 | `gateway_mode_example.py` | Gateway mode configuration | ✅ | ✅ |
@@ -346,6 +358,8 @@ poetry install  # First time only
 # Run individual examples
 poetry run python basic_protection.py
 poetry run python openai_example.py
+poetry run python cohere_example.py
+poetry run python mistral_example.py
 poetry run python streaming_example.py
 poetry run python mcp_example.py
 poetry run python gateway_mode_example.py
@@ -569,6 +583,10 @@ Copy `.env.example` to `.env` and configure:
 | `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` | Gateway + Azure | Azure OpenAI gateway API key |
 | `AGENTSEC_BEDROCK_GATEWAY_URL` | Gateway + Bedrock | Bedrock gateway URL (uses AWS Sig V4 auth) |
 | `AGENTSEC_VERTEXAI_GATEWAY_URL` | Gateway + Vertex | Vertex AI gateway URL (uses ADC OAuth2) |
+| `AGENTSEC_COHERE_GATEWAY_URL` | Gateway + Cohere | Cohere gateway URL |
+| `AGENTSEC_COHERE_GATEWAY_API_KEY` | Gateway + Cohere | Cohere gateway API key |
+| `AGENTSEC_MISTRAL_GATEWAY_URL` | Gateway + Mistral | Mistral AI gateway URL |
+| `AGENTSEC_MISTRAL_GATEWAY_API_KEY` | Gateway + Mistral | Mistral AI gateway API key |
 | `AGENTSEC_MCP_GATEWAY_URL` | Gateway + MCP | MCP gateway URL |
 | `AGENTSEC_MCP_GATEWAY_API_KEY` | Gateway + MCP | MCP gateway API key |
 
@@ -649,6 +667,38 @@ GOOGLE_AI_SDK=google_genai  # Modern SDK (recommended)
 # or
 GOOGLE_AI_SDK=vertexai      # Legacy SDK (default)
 ```
+
+</details>
+
+<details>
+<summary><strong>Cohere</strong></summary>
+
+```bash
+COHERE_API_KEY=your-cohere-api-key
+```
+
+**How to get a Cohere API key**
+
+1. Sign up at [Cohere Dashboard](https://dashboard.cohere.com/welcome/register) (email/password or Google/GitHub).
+2. Log in and go to [API keys](https://dashboard.cohere.com/api-keys).
+3. Create a key (e.g. **Trial** for limited free usage or **Production** for higher limits).
+4. Copy the key into `.env` as `COHERE_API_KEY`.
+
+</details>
+
+<details>
+<summary><strong>Mistral AI</strong></summary>
+
+```bash
+MISTRAL_API_KEY=your-mistral-api-key
+```
+
+**How to get a Mistral API key**
+
+1. Create an account at [Mistral Console](https://console.mistral.ai).
+2. (Optional) Set up billing at [admin.mistral.ai](https://admin.mistral.ai) (Organization → Billing). You can use the **Experiment** (free) or **Scale** (pay-as-you-go) plan.
+3. In your workspace, open **API Keys** and click **Create new key**.
+4. Copy the key into `.env` as `MISTRAL_API_KEY` (it is shown only once).
 
 </details>
 
@@ -775,7 +825,7 @@ decision.explanation     # Human-readable explanation
 |----------|-----------|:----------:|-------------------|
 | **Core SDK** | Unit | ~600 | Patching, inspection, decisions, config |
 | **Simple Examples** | Unit | ~70 | Example file structure, syntax |
-| **Simple Examples** | Integration | 14 | 7 examples x 2 modes (API + Gateway) |
+| **Simple Examples** | Integration | 18 | 9 examples x 2 modes (API + Gateway) |
 | **Agent Frameworks** | Unit | ~180 | Agent setup, provider configs |
 | **Agent Frameworks** | Integration | ~40 | 6 frameworks x (2-4 providers) x 2 modes* |
 | **AgentCore** | Unit | ~60 | Deploy scripts, protection setup |
