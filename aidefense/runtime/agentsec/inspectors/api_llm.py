@@ -90,7 +90,8 @@ class _AgentSecConfig(Config):
         logger_instance: logging.Logger = None,
         **kwargs,
     ):
-        timeout_int = int(timeout_sec) if timeout_sec is not None else 30
+        # None lets Config use its DEFAULT_TIMEOUT
+        timeout_int = int(timeout_sec) if timeout_sec is not None else None
         Config._initialize(
             self,
             region="us-west-2",
@@ -115,7 +116,7 @@ class _AgentSecAsyncConfig(AsyncConfig):
         logger_instance: logging.Logger = None,
         **kwargs,
     ):
-        timeout_int = int(timeout_sec) if timeout_sec is not None else 30
+        timeout_int = int(timeout_sec) if timeout_sec is not None else None
         AsyncConfig._initialize(
             self,
             region="us-west-2",
@@ -225,7 +226,7 @@ class LLMInspector:
             endpoint: Base URL for the AI Defense API (or from AI_DEFENSE_API_MODE_LLM_ENDPOINT env)
             default_rules: Default rules for inspection
             entity_types: Entity types to filter for (e.g., ["EMAIL", "PHONE_NUMBER"])
-            timeout_ms: Request timeout in milliseconds (default 1000)
+            timeout_ms: Request timeout in milliseconds (if omitted, SDK config default is used)
             retry_attempts: Deprecated, use retry_total instead
             retry_total: Total number of retry attempts (default 1, no retry)
             retry_backoff: Exponential backoff factor in seconds (default 0, no backoff)
@@ -244,13 +245,12 @@ class LLMInspector:
         self.entity_types = entity_types or _state.get_llm_entity_types()
         self.fail_open = fail_open
         
-        # Timeout: explicit param > state > default (1000ms)
+        # Timeout: explicit param > state; if neither set, leave None so SDK uses its default
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
         else:
             state_timeout = _state.get_timeout()
-            # State stores timeout in seconds, convert to ms
-            self.timeout_ms = (state_timeout * 1000) if state_timeout is not None else 1000
+            self.timeout_ms = (state_timeout * 1000) if state_timeout is not None else None
         
         # Retry configuration: explicit param > state > default
         # Handle deprecated retry_attempts parameter
@@ -312,7 +312,7 @@ class LLMInspector:
                 runtime_base_url = "https://us.api.inspect.aidefense.security.cisco.com"
             cfg = _AgentSecConfig(
                 runtime_base_url=runtime_base_url,
-                timeout_sec=self.timeout_ms / 1000.0,
+                timeout_sec=(self.timeout_ms / 1000.0) if self.timeout_ms is not None else None,
                 logger_instance=logger,
             )
             self._chat_client = ChatInspectionClient(api_key=self.api_key, config=cfg)
@@ -335,7 +335,7 @@ class LLMInspector:
                 runtime_base_url = "https://us.api.inspect.aidefense.security.cisco.com"
             cfg = _AgentSecAsyncConfig(
                 runtime_base_url=runtime_base_url,
-                timeout_sec=self.timeout_ms / 1000.0,
+                timeout_sec=(self.timeout_ms / 1000.0) if self.timeout_ms is not None else None,
                 logger_instance=logger,
             )
             client = AsyncChatInspectionClient(api_key=self.api_key, config=cfg)
@@ -452,7 +452,7 @@ class LLMInspector:
             # Raise typed exceptions based on error type
             if isinstance(error, (httpx.TimeoutException, requests.exceptions.Timeout, asyncio.TimeoutError)):
                 raise InspectionTimeoutError(
-                    f"Inspection timed out after {self.timeout_ms}ms: {error_msg}",
+                    f"Inspection timed out: {error_msg}",
                     timeout_ms=self.timeout_ms,
                 ) from error
             
@@ -502,7 +502,7 @@ class LLMInspector:
                     messages=runtime_messages,
                     metadata=runtime_metadata,
                     config=config,
-                    timeout=int(self.timeout_ms / 1000) or None,
+                    timeout=(int(self.timeout_ms / 1000) if self.timeout_ms is not None else None),
                 )
                 decision = _inspect_response_to_decision(resp)
                 logger.info(f"Request decision: {decision.action}")
@@ -554,7 +554,7 @@ class LLMInspector:
         runtime_metadata = _metadata_to_runtime(metadata or {})
         config = _inspection_config_from_inspector(self.default_rules, self.entity_types)
         last_error: Optional[Exception] = None
-        timeout_sec = int(self.timeout_ms / 1000) or None
+        timeout_sec = (int(self.timeout_ms / 1000) if self.timeout_ms is not None else None)
         
         for attempt in range(self.retry_total):
             try:

@@ -35,9 +35,9 @@ TEST_API_KEY = "0123456789" * 6 + "0123"  # 64 characters
 @pytest.fixture(autouse=True)
 def reset_config_singleton():
     """Reset Config singleton before each test."""
-    Config._instance = None
+    Config._instances = {}
     yield
-    Config._instance = None
+    Config._instances = {}
 
 
 @pytest.fixture

@@ -117,7 +117,8 @@ class TestMCPInspectorConstructor:
             
             assert inspector.api_key is None
             assert inspector.endpoint is None
-            assert inspector.timeout_ms == 1000
+            # No timeout set by user or state → SDK uses its default (agentsec leaves None)
+            assert inspector.timeout_ms is None
             assert inspector.retry_attempts == 1
             assert inspector.fail_open is True
             # _request_id_counter is now itertools.count() for thread safety
@@ -141,16 +142,25 @@ class TestMCPInspectorRequestBuilding:
         assert out["content"][0]["type"] == "text"
         assert out["content"][0]["text"] == "Hello, world!"
 
+    def test_result_to_content_dict_mcp_result_passthrough(self):
+        """Test _result_to_content_dict with MCP result (dict with content) passed as-is."""
+        result = {"content": [{"type": "text", "text": "ok"}, {"type": "image", "data": "x", "mimeType": "image/png"}], "isError": False}
+        out = _result_to_content_dict(result)
+        assert out is result
+        assert out["content"][0]["text"] == "ok"
+        assert out["content"][1]["type"] == "image"
+
     def test_result_to_content_dict_dict(self):
-        """Test _result_to_content_dict with dict result."""
+        """Test _result_to_content_dict with dict result (single content item, passed as-is)."""
         result = {"status": "success", "data": [1, 2, 3]}
         out = _result_to_content_dict(result)
-        assert out["content"][0]["text"] == '{"status": "success", "data": [1, 2, 3]}'
+        assert out["content"] == [result]
 
     def test_result_to_content_dict_list(self):
-        """Test _result_to_content_dict with list result."""
-        out = _result_to_content_dict([1, 2, 3])
-        assert out["content"][0]["text"] == "[1, 2, 3]"
+        """Test _result_to_content_dict with list result (content array, passed as-is)."""
+        result = [{"type": "text", "text": "hi"}, {"type": "image", "data": "base64..."}]
+        out = _result_to_content_dict(result)
+        assert out["content"] == result
 
     def test_request_params_tools_call(self):
         """Test _request_params_for_method for tools/call."""

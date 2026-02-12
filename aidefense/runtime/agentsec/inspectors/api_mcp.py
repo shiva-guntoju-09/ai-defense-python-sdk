@@ -63,20 +63,16 @@ def _mcp_inspect_response_to_decision(mcp_resp: MCPInspectResponse) -> Decision:
 
 
 def _result_to_content_dict(result: Any) -> Dict[str, Any]:
-    """Convert agentsec result (any) to result_data dict for MCP inspect_response."""
+    """Build MCP result_data for inspect_response. Passes content as-is when already in MCP shape."""
     if isinstance(result, dict) and "content" in result:
         return result
+    if isinstance(result, list):
+        return {"content": result}
+    if isinstance(result, dict):
+        return {"content": [result]}
     if isinstance(result, str):
-        text_content = result
-    elif isinstance(result, (dict, list)):
-        text_content = json.dumps(result)
-    else:
-        text_content = str(result)
-    return {
-        "content": [
-            {"type": "text", "text": text_content},
-        ]
-    }
+        return {"content": [{"type": "text", "text": result}]}
+    return {"content": [{"type": "text", "text": str(result)}]}
 
 
 def _request_params_for_method(method: str, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -101,7 +97,7 @@ class _AgentSecMCPConfig(Config):
         logger_instance: logging.Logger = None,
         **kwargs,
     ):
-        timeout_int = int(timeout_sec) if timeout_sec is not None else 30
+        timeout_int = int(timeout_sec) if timeout_sec is not None else None
         Config._initialize(
             self,
             region="us-west-2",
@@ -163,7 +159,7 @@ class MCPInspector:
                      Falls back to AI_DEFENSE_API_MODE_MCP_API_KEY, then AI_DEFENSE_API_MODE_LLM_API_KEY env vars.
             endpoint: Base URL for the AI Defense MCP API.
                       Falls back to AI_DEFENSE_API_MODE_MCP_ENDPOINT, then AI_DEFENSE_API_MODE_LLM_ENDPOINT env vars.
-            timeout_ms: Request timeout in milliseconds (default 1000)
+            timeout_ms: Request timeout in milliseconds (if omitted, SDK config default is used)
             retry_attempts: Deprecated, use retry_total instead
             retry_total: Total number of retry attempts (default 1, no retry)
             retry_backoff: Exponential backoff factor in seconds (default 0, no backoff)
@@ -198,12 +194,12 @@ class MCPInspector:
         
         self.fail_open = fail_open
         
-        # Timeout: explicit param > state > default (1000ms)
+        # Timeout: explicit param > state; if neither set, leave None so SDK uses its default
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
         else:
             state_timeout = _state.get_timeout()
-            self.timeout_ms = (state_timeout * 1000) if state_timeout is not None else 1000
+            self.timeout_ms = (state_timeout * 1000) if state_timeout is not None else None
         
         # Retry configuration: explicit param > state > default
         if retry_total is not None:
@@ -266,7 +262,7 @@ class MCPInspector:
                 runtime_base_url = "https://us.api.inspect.aidefense.security.cisco.com"
             cfg = _AgentSecMCPConfig(
                 runtime_base_url=runtime_base_url,
-                timeout_sec=self.timeout_ms / 1000.0,
+                timeout_sec=(self.timeout_ms / 1000.0) if self.timeout_ms is not None else None,
                 logger_instance=logger,
             )
             self._mcp_client = MCPInspectionClient(api_key=self.api_key, config=cfg)
@@ -334,7 +330,7 @@ class MCPInspector:
             # Raise typed exceptions based on error type
             if isinstance(error, (httpx.TimeoutException, requests.exceptions.Timeout)):
                 raise InspectionTimeoutError(
-                    f"MCP inspection timed out after {self.timeout_ms}ms: {error_msg}",
+                    f"MCP inspection timed out: {error_msg}",
                     timeout_ms=self.timeout_ms,
                 ) from error
             
@@ -377,7 +373,7 @@ class MCPInspector:
         
         logger.debug(f"MCP inspection request: {method}={tool_name}")
         last_error: Optional[Exception] = None
-        timeout_sec = int(self.timeout_ms / 1000) or None
+        timeout_sec = (int(self.timeout_ms / 1000) if self.timeout_ms is not None else None)
         
         for attempt in range(self.retry_total):
             try:
@@ -454,7 +450,7 @@ class MCPInspector:
         result_data = _result_to_content_dict(result)
         params = _request_params_for_method(method, tool_name, arguments)
         last_error: Optional[Exception] = None
-        timeout_sec = int(self.timeout_ms / 1000) or None
+        timeout_sec = (int(self.timeout_ms / 1000) if self.timeout_ms is not None else None)
         
         for attempt in range(self.retry_total):
             try:
