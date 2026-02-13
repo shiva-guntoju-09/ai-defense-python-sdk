@@ -3,17 +3,13 @@
 import threading
 from typing import Any, Dict, List, Optional
 
+from .config import VALID_API_MODES, VALID_GATEWAY_MODES, VALID_INTEGRATION_MODES
 
 # Thread lock for state mutations
 _state_lock = threading.Lock()
 
 # Supported LLM providers
 SUPPORTED_PROVIDERS = ["openai", "azure_openai", "vertexai", "bedrock", "google_genai", "cohere", "mistral"]
-
-# Valid configuration values
-VALID_API_MODES = {"off", "monitor", "enforce"}
-VALID_INTEGRATION_MODES = {"api", "gateway"}
-VALID_GATEWAY_MODES = {"off", "on"}
 
 # Global state
 _initialized: bool = False

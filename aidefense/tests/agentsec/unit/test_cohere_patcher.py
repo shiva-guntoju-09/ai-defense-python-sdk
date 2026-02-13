@@ -201,6 +201,48 @@ class TestCohereGatewayMode:
             with patch("aidefense.runtime.agentsec.patchers.cohere._state.get_provider_gateway_api_key", return_value=None):
                 assert _should_use_gateway() is False
 
+    def test_should_use_gateway_returns_true_when_configured(self):
+        """_should_use_gateway returns True when gateway mode and URL+key are set."""
+        from aidefense.runtime.agentsec.patchers.cohere import _should_use_gateway
+        _state.set_state(initialized=True, llm_integration_mode="gateway")
+        with patch("aidefense.runtime.agentsec.patchers.cohere._state.get_provider_gateway_url", return_value="https://gateway.example.com/cohere"):
+            with patch("aidefense.runtime.agentsec.patchers.cohere._state.get_provider_gateway_api_key", return_value="cohere-key"):
+                assert _should_use_gateway() is True
+
+    @patch("aidefense.runtime.agentsec.patchers.cohere._state")
+    @patch("httpx.Client")
+    def test_gateway_call_sync_sends_to_gateway_with_bearer(self, mock_httpx_client, mock_state):
+        """Gateway sync call POSTs to gateway URL with Authorization Bearer header."""
+        from aidefense.runtime.agentsec.patchers.cohere import _handle_gateway_call_sync
+
+        mock_state.get_provider_gateway_url.return_value = "https://gateway.example.com/cohere"
+        mock_state.get_provider_gateway_api_key.return_value = "cohere-gateway-key"
+        mock_state.get_gateway_mode_fail_open_llm.return_value = True
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "id": "resp-1",
+            "message": {"role": "assistant", "content": [{"text": "Hi"}]},
+            "finish_reason": "complete",
+            "usage": {},
+        }
+        mock_response.raise_for_status = MagicMock()
+        mock_client_instance = MagicMock()
+        mock_client_instance.post.return_value = mock_response
+        mock_httpx_client.return_value.__enter__ = MagicMock(return_value=mock_client_instance)
+        mock_httpx_client.return_value.__exit__ = MagicMock(return_value=False)
+
+        kwargs = {"model": "command-a", "messages": [{"role": "user", "content": "Hello"}]}
+        result = _handle_gateway_call_sync(kwargs, [], {})
+
+        mock_client_instance.post.assert_called_once()
+        call_kwargs = mock_client_instance.post.call_args[1]
+        assert call_kwargs["headers"]["Authorization"] == "Bearer cohere-gateway-key"
+        assert "application/json" in call_kwargs["headers"]["Content-Type"]
+        assert call_kwargs["json"]["model"] == "command-a"
+        assert len(call_kwargs["json"]["messages"]) == 1
+        assert result is not None
+
 
 class TestCoherePatchApply:
     """Test patch_cohere() behavior."""

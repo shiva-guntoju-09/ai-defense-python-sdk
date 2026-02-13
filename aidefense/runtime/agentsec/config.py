@@ -5,7 +5,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 # Valid mode values for API mode
-VALID_MODES = ("off", "monitor", "enforce")
+VALID_API_MODES = ("off", "monitor", "enforce")
 
 # Valid mode values for Gateway mode (off/on only - gateway handles enforcement)
 VALID_GATEWAY_MODES = ("off", "on")
@@ -104,8 +104,8 @@ def _parse_mode_env(value: Optional[str], default: str) -> str:
     if value is None:
         return default
     value = value.lower()
-    if value not in VALID_MODES:
-        raise ValueError(f"Invalid mode '{value}'. Must be one of: {', '.join(VALID_MODES)}")
+    if value not in VALID_API_MODES:
+        raise ValueError(f"Invalid mode '{value}'. Must be one of: {', '.join(VALID_API_MODES)}")
     return value
 
 

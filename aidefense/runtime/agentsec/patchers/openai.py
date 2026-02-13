@@ -659,7 +659,7 @@ def _handle_gateway_call_sync(kwargs: Dict[str, Any], stream: bool, normalized: 
                 full_url,
                 json=request_body,
                 headers={
-                    "Authorization": f"Bearer {gateway_api_key}",
+                    "api-key": gateway_api_key,
                     "Content-Type": "application/json",
                 },
             )
@@ -981,7 +981,7 @@ async def _handle_gateway_call_async(kwargs: Dict[str, Any], stream: bool, norma
                 full_url,
                 json=request_body,
                 headers={
-                    "Authorization": f"Bearer {gateway_api_key}",
+                    "api-key": gateway_api_key,
                     "Content-Type": "application/json",
                 },
             )

@@ -31,7 +31,7 @@ from . import _state
 
 # Lock for thread-safe initialization of protect()
 _protect_lock = threading.Lock()
-from .config import load_env_config, VALID_MODES, VALID_GATEWAY_MODES
+from .config import load_env_config, VALID_API_MODES, VALID_GATEWAY_MODES
 from .decision import Decision
 from .exceptions import (
     AgentsecError,
@@ -135,7 +135,7 @@ def get_patched_clients() -> List[str]:
 
 def protect(
     patch_clients: bool = True,
-    *,
+    *,  # Enforces all following arguments to be passed as keyword arguments only.
     auto_dotenv: bool = True,
     # Integration mode (common for both API and Gateway)
     llm_integration_mode: Optional[str] = None,  # AGENTSEC_LLM_INTEGRATION_MODE
@@ -413,9 +413,9 @@ def _protect_impl(
     
     # Validate API modes
     for name, mode in [("api_mode_llm", api_mode_llm), ("api_mode_mcp", api_mode_mcp)]:
-        if mode not in VALID_MODES:
+        if mode not in VALID_API_MODES:
             raise ValueError(
-                f"Invalid {name} '{mode}'. Must be one of: {', '.join(VALID_MODES)}"
+                f"Invalid {name} '{mode}'. Must be one of: {', '.join(VALID_API_MODES)}"
             )
     
     # Get API endpoints and keys from parameters or env config

@@ -2,12 +2,12 @@
 
 import logging
 import threading
-from typing import List
+from typing import Dict, List
 
 logger = logging.getLogger("aidefense.runtime.agentsec.patchers")
 
 # Registry of patched functions/clients with thread-safe access
-_patch_registry: dict[str, bool] = {}
+_patch_registry: Dict[str, bool] = {}
 _registry_lock = threading.Lock()
 
 

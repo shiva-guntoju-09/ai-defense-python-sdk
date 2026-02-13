@@ -15,14 +15,24 @@ Environment variables are loaded from ../.env:
 """
 
 import os
+import sys
 from pathlib import Path
 
-# Load environment variables from shared .env file
-from dotenv import load_dotenv
-env_file = Path(__file__).parent.parent / ".env"
-if env_file.exists():
-    load_dotenv(env_file)
-    print(f"Loaded environment from {env_file}")
+# Allow running from 1-simple without installing the package (add repo root to path)
+_here = Path(__file__).resolve().parent
+_repo_root = _here.parent.parent.parent
+if _repo_root.exists() and (_repo_root / "aidefense").is_dir() and str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+
+# Load environment variables from shared .env file (optional: requires python-dotenv)
+try:
+    from dotenv import load_dotenv
+    env_file = Path(__file__).parent.parent / ".env"
+    if env_file.exists():
+        load_dotenv(env_file)
+        print(f"Loaded environment from {env_file}")
+except ImportError:
+    pass  # Run without dotenv: set env vars manually or use a venv with python-dotenv
 
 # IMPORTANT: Enable protection BEFORE importing Cohere
 from aidefense.runtime import agentsec
