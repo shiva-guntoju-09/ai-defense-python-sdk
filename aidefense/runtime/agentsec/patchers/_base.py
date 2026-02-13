@@ -22,6 +22,10 @@ from typing import Any, Callable, Optional
 
 import wrapt
 
+from .. import _state
+from .._context import get_active_gateway, is_llm_skip_active
+from ..gateway_settings import GatewaySettings
+
 logger = logging.getLogger("aidefense.runtime.agentsec.patchers")
 
 
@@ -134,3 +138,58 @@ def create_async_wrapper(
         return result
     
     return wrapper
+
+
+# =========================================================================
+# Shared gateway resolver for all LLM patchers
+# =========================================================================
+
+def resolve_gateway_settings(provider: str) -> Optional[GatewaySettings]:
+    """Determine which LLM gateway to use for the current call.
+
+    This is the shared resolver used by all LLM patchers.  It implements
+    the routing logic:
+
+    0. Gate: skip if integration mode is not ``"gateway"`` or if
+       ``skip_inspection`` is active.
+    1. If a named gateway is active (via ``agentsec.gateway("name")``),
+       look it up.  Use it only if its ``provider`` field matches the
+       detected provider (or is absent).
+    2. Fall back to the default gateway for this provider (the
+       ``llm_gateways`` entry with ``provider: X`` and ``default: true``).
+
+    Args:
+        provider: The detected provider name (e.g. ``"openai"``).
+
+    Returns:
+        A resolved :class:`GatewaySettings` or ``None`` if no gateway
+        applies.
+    """
+    # Gate: only resolve if gateway mode is active for LLM
+    if _state.get_llm_integration_mode() != "gateway":
+        return None
+
+    # Respect skip_inspection context
+    if is_llm_skip_active():
+        return None
+
+    # Step 1: Check named gateway from context var
+    active = get_active_gateway()
+    if active:
+        config = _state.get_llm_gateway(active)
+        if config:
+            gw_provider = config.get("provider")
+            if gw_provider and gw_provider != provider:
+                # Provider mismatch -- fall through to provider default
+                pass
+            else:
+                return _state.resolve_llm_gateway_settings(
+                    config, provider=gw_provider or provider
+                )
+
+    # Step 2: Fall back to the default gateway for this provider
+    config = _state.get_default_gateway_for_provider(provider)
+    if config:
+        return _state.resolve_llm_gateway_settings(config, provider=provider)
+
+    return None

@@ -198,7 +198,7 @@ class MCPInspector:
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
         else:
-            state_timeout = _state.get_timeout()
+            state_timeout = _state.get_api_mcp_timeout()
             self.timeout_ms = (state_timeout * 1000) if state_timeout is not None else None
         
         # Retry configuration: explicit param > state > default
@@ -208,19 +208,19 @@ class MCPInspector:
             logger.debug("retry_attempts is deprecated, use retry_total instead")
             self.retry_total = max(1, retry_attempts)
         else:
-            state_retry = _state.get_retry_total()
+            state_retry = _state.get_api_mcp_retry_total()
             self.retry_total = max(1, state_retry) if state_retry is not None else 1
         
         if retry_backoff is not None:
             self.retry_backoff = max(0.0, retry_backoff)
         else:
-            state_backoff = _state.get_retry_backoff()
+            state_backoff = _state.get_api_mcp_retry_backoff()
             self.retry_backoff = max(0.0, state_backoff) if state_backoff is not None else 0.0
         
         if retry_status_codes is not None:
             self.retry_status_codes = retry_status_codes
         else:
-            state_codes = _state.get_retry_status_codes()
+            state_codes = _state.get_api_mcp_retry_status_codes()
             self.retry_status_codes = state_codes if state_codes is not None else [500, 502, 503, 504]
         
         # Keep retry_attempts as alias for backward compatibility

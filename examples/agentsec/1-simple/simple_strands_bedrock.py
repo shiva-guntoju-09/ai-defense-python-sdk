@@ -30,11 +30,16 @@ os.environ["AGENTSEC_LOG_LEVEL"] = "DEBUG"
 from aidefense.runtime import agentsec
 
 # Enable AI Defense protection for all LLM calls
-# Reads mode from environment: AGENTSEC_LLM_INTEGRATION_MODE (api/gateway)
 agentsec.protect(
-    api_mode_llm="monitor",
-    api_mode_fail_open_llm=True,
+    llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
+    mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
+    api_mode={
+        "llm": {"mode": "monitor"},
+        "llm_defaults": {"fail_open": True},
+    },
 )
+# Alternative: use a YAML config file (recommended for production):
+#   agentsec.protect(config="agentsec.yaml")
 
 from strands import Agent
 from strands.models import BedrockModel

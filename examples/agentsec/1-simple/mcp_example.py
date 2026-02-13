@@ -28,7 +28,13 @@ if env_file.exists():
 
 # Enable protection before importing MCP client
 from aidefense.runtime import agentsec
-agentsec.protect(api_mode_mcp="monitor")  # Use monitor mode for this example
+agentsec.protect(
+    llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
+    mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
+    api_mode={"mcp": {"mode": "monitor"}},  # Use monitor mode
+)
+# Alternative: use a YAML config file (recommended for production):
+#   agentsec.protect(config="agentsec.yaml")
 
 
 async def main() -> None:

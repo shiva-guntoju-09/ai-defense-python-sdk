@@ -114,8 +114,7 @@ class TestFileStructure:
         with open(env_file, "r") as f:
             content = f.read()
         
-        assert "AI_DEFENSE_API_MODE_LLM_ENDPOINT" in content, "Should document AI_DEFENSE_API_MODE_LLM_ENDPOINT"
-        assert "AGENTSEC_API_MODE_LLM" in content, "Should document AGENTSEC_API_MODE_LLM"
+        assert "AI_DEFENSE_API_MODE_LLM_API_KEY" in content, "Should document AI_DEFENSE_API_MODE_LLM_API_KEY"
     
     def test_dockerfile_exists(self):
         """Test that container-deploy/Dockerfile exists."""
@@ -170,12 +169,12 @@ class TestAgentFactory:
     
     def test_api_mode_endpoint_configurable(self, agent_factory_code):
         """Test that API mode endpoint is configurable."""
-        assert "api_mode_llm_endpoint" in agent_factory_code, "Should configure api_mode_llm_endpoint"
+        assert "endpoint" in agent_factory_code, "Should configure api endpoint"
     
-    def test_providers_configured(self, agent_factory_code):
-        """Test that providers are configured."""
-        assert "providers=" in agent_factory_code or "providers={" in agent_factory_code, \
-            "Should configure providers"
+    def test_llm_gateways_configured(self, agent_factory_code):
+        """Test that llm_gateways are configured."""
+        assert '"llm_gateways"' in agent_factory_code or "'llm_gateways'" in agent_factory_code, \
+            "Should configure llm_gateways"
     
     def test_bedrock_gateway_configurable(self, agent_factory_code):
         """Test that Bedrock gateway is configurable."""

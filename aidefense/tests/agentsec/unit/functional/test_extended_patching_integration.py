@@ -33,7 +33,7 @@ class TestVertexAIIntegration:
              patch("aidefense.runtime.agentsec.patchers.bedrock.safe_import", return_value=None), \
              patch("aidefense.runtime.agentsec.patchers.mcp.safe_import", return_value=None):
             
-            protect(api_mode_llm="monitor")
+            protect(api_mode={"llm": {"mode": "monitor"}})
             
             patched = get_patched_clients()
             assert "vertexai" in patched
@@ -45,7 +45,7 @@ class TestVertexAIIntegration:
              patch("aidefense.runtime.agentsec.patchers.bedrock.safe_import", return_value=None), \
              patch("aidefense.runtime.agentsec.patchers.mcp.safe_import", return_value=None):
             
-            protect(api_mode_llm="monitor")
+            protect(api_mode={"llm": {"mode": "monitor"}})
             
             patched = get_patched_clients()
             assert "vertexai" not in patched
@@ -67,7 +67,7 @@ class TestBedrockIntegration:
              patch("aidefense.runtime.agentsec.patchers.vertexai.safe_import", return_value=None), \
              patch("aidefense.runtime.agentsec.patchers.mcp.safe_import", return_value=None):
             
-            protect(api_mode_llm="monitor")
+            protect(api_mode={"llm": {"mode": "monitor"}})
             
             patched = get_patched_clients()
             assert "bedrock" in patched
@@ -79,7 +79,7 @@ class TestBedrockIntegration:
              patch("aidefense.runtime.agentsec.patchers.vertexai.safe_import", return_value=None), \
              patch("aidefense.runtime.agentsec.patchers.mcp.safe_import", return_value=None):
             
-            protect(api_mode_llm="monitor")
+            protect(api_mode={"llm": {"mode": "monitor"}})
             
             patched = get_patched_clients()
             assert "bedrock" not in patched
@@ -102,7 +102,7 @@ class TestCohereIntegration:
              patch("aidefense.runtime.agentsec.patchers.google_genai.safe_import", return_value=None), \
              patch("aidefense.runtime.agentsec.patchers.mistral.safe_import", return_value=None):
 
-            protect(api_mode_llm="monitor")
+            protect(api_mode={"llm": {"mode": "monitor"}})
 
             patched = get_patched_clients()
             assert "cohere" in patched
@@ -117,7 +117,7 @@ class TestCohereIntegration:
              patch("aidefense.runtime.agentsec.patchers.google_genai.safe_import", return_value=None), \
              patch("aidefense.runtime.agentsec.patchers.mistral.safe_import", return_value=None):
 
-            protect(api_mode_llm="monitor")
+            protect(api_mode={"llm": {"mode": "monitor"}})
 
             patched = get_patched_clients()
             assert "cohere" not in patched
@@ -140,7 +140,7 @@ class TestMistralIntegration:
              patch("aidefense.runtime.agentsec.patchers.google_genai.safe_import", return_value=None), \
              patch("aidefense.runtime.agentsec.patchers.cohere.safe_import", return_value=None):
 
-            protect(api_mode_llm="monitor")
+            protect(api_mode={"llm": {"mode": "monitor"}})
 
             patched = get_patched_clients()
             assert "mistral" in patched
@@ -155,7 +155,7 @@ class TestMistralIntegration:
              patch("aidefense.runtime.agentsec.patchers.google_genai.safe_import", return_value=None), \
              patch("aidefense.runtime.agentsec.patchers.cohere.safe_import", return_value=None):
 
-            protect(api_mode_llm="monitor")
+            protect(api_mode={"llm": {"mode": "monitor"}})
 
             patched = get_patched_clients()
             assert "mistral" not in patched

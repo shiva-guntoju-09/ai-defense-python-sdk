@@ -235,8 +235,7 @@ class TestPatcherInfrastructure:
         # Initialize with off mode
         _state.set_state(
             initialized=True,
-            api_mode_llm="off",
-            api_mode_mcp="off",
+            api_mode={"llm": {"mode": "off"}, "mcp": {"mode": "off"}},
             llm_integration_mode="api",
             mcp_integration_mode="api",
         )
@@ -262,8 +261,7 @@ class TestPatcherInfrastructure:
         # Initialize with monitor mode
         _state.set_state(
             initialized=True,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="api",
             mcp_integration_mode="api",
         )
@@ -384,12 +382,15 @@ class TestIntegrationWithAgentsec:
         
         # Should not raise when configuring google_genai provider
         agentsec.protect(
-            api_mode_llm="off",
-            api_mode_mcp="off",
-            providers={
-                "google_genai": {
-                    "gateway_url": "https://test-gateway.example.com",
-                    "gateway_api_key": "test-key",
+            api_mode={"llm": {"mode": "off"}, "mcp": {"mode": "off"}},
+            gateway_mode={
+                "llm_gateways": {
+                    "google_genai-default": {
+                        "gateway_url": "https://test-gateway.example.com",
+                        "gateway_api_key": "test-key",
+                        "provider": "google_genai",
+                        "default": True,
+                    }
                 }
             },
             auto_dotenv=False,

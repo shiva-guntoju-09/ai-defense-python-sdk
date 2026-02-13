@@ -1,6 +1,5 @@
 """Integration tests for agentsec (Task 6.3)."""
 
-import os
 from unittest.mock import patch
 
 import pytest
@@ -24,14 +23,14 @@ class TestFullInitialization:
 
     def test_full_init_flow_enforce_mode(self):
         """Test full initialization flow with all components in enforce mode."""
-        protect(api_mode_llm="enforce")
+        protect(api_mode={"llm": {"mode": "enforce"}})
         
         assert is_initialized()
         assert get_llm_mode() == "enforce"
 
     def test_full_init_flow_monitor_mode(self):
         """Test full initialization flow in monitor mode."""
-        protect(api_mode_llm="monitor")
+        protect(api_mode={"llm": {"mode": "monitor"}})
         
         assert is_initialized()
         assert get_llm_mode() == "monitor"
@@ -42,7 +41,7 @@ class TestProtectInspectorIntegration:
 
     def test_inspectors_work_after_protect(self):
         """Test that inspectors work correctly after protect() is called."""
-        protect(api_mode_llm="enforce")
+        protect(api_mode={"llm": {"mode": "enforce"}})
         
         # All inspectors should return allow (stubs)
         llm = LLMInspector()
@@ -60,32 +59,28 @@ class TestProtectInspectorIntegration:
         assert "test violation" in str(error)
 
 
-class TestEnvVariableOverrides:
-    """Test environment variable override scenarios."""
+class TestProgrammaticConfig:
+    """Test programmatic config via protect() api_mode."""
 
-    def test_env_mode_override(self):
-        """Test AGENTSEC_MODE environment variable."""
-        # Note: Currently env mode doesn't override explicit mode
-        # This test documents the current behavior
-        with patch.dict(os.environ, {"AGENTSEC_MODE": "monitor"}):
-            protect(api_mode_llm="enforce")
-            assert get_llm_mode() == "enforce"  # Explicit wins
+    def test_explicit_mode_wins(self):
+        """Test that explicit api_mode sets mode correctly."""
+        protect(api_mode={"llm": {"mode": "enforce"}})
+        assert get_llm_mode() == "enforce"
 
-    def test_env_config_values(self):
-        """Test that all env config values are loaded."""
-        env_vars = {
-            "AI_DEFENSE_API_MODE_LLM_API_KEY": "key-from-env",
-            "AI_DEFENSE_API_MODE_LLM_ENDPOINT": "https://api.test.com",
-            "AGENTSEC_LLM_RULES": "jailbreak,pii_detection",
-        }
+    def test_programmatic_config_values(self):
+        """Test that api_mode endpoint, api_key, and rules are stored correctly."""
+        protect(api_mode={
+            "llm": {
+                "endpoint": "https://api.test.com",
+                "api_key": "key-from-config",
+                "rules": ["jailbreak", "pii_detection"],
+            },
+        })
         
-        with patch.dict(os.environ, env_vars, clear=False):
-            protect()
-            
-            from aidefense.runtime.agentsec._state import get_api_mode_llm_api_key, get_api_mode_llm_endpoint, get_llm_rules
-            assert get_api_mode_llm_api_key() == "key-from-env"
-            assert get_api_mode_llm_endpoint() == "https://api.test.com"
-            assert get_llm_rules() == ["jailbreak", "pii_detection"]
+        from aidefense.runtime.agentsec._state import get_api_mode_llm_api_key, get_api_mode_llm_endpoint, get_llm_rules
+        assert get_api_mode_llm_api_key() == "key-from-config"
+        assert get_api_mode_llm_endpoint() == "https://api.test.com"
+        assert get_llm_rules() == ["jailbreak", "pii_detection"]
 
 
 class TestComponentIntegration:

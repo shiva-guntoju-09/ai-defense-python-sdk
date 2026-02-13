@@ -49,7 +49,11 @@ class TestAzureOpenAICoverage:
         mock_get_inspector.return_value = mock_inspector
         
         # Setup state
-        _state.set_state(initialized=True, llm_rules=None, api_mode_fail_open_llm=True, api_mode_llm="monitor")
+        _state.set_state(
+            initialized=True,
+            llm_rules=None,
+            api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "monitor"}},
+        )
         clear_inspection_context()
         
         # Mock wrapped function
@@ -93,7 +97,11 @@ class TestAzureOpenAICoverage:
         mock_get_inspector.return_value = mock_inspector
         
         # Setup state in enforce mode
-        _state.set_state(initialized=True, llm_rules=None, api_mode_fail_open_llm=True, api_mode_llm="enforce")
+        _state.set_state(
+            initialized=True,
+            llm_rules=None,
+            api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "enforce"}},
+        )
         clear_inspection_context()
         
         # Mock wrapped function
@@ -123,7 +131,11 @@ class TestAzureOpenAICoverage:
         mock_get_inspector.return_value = mock_inspector
         
         # Setup state
-        _state.set_state(initialized=True, llm_rules=None, api_mode_fail_open_llm=True, api_mode_llm="monitor")
+        _state.set_state(
+            initialized=True,
+            llm_rules=None,
+            api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "monitor"}},
+        )
         clear_inspection_context()
         
         # Mock streaming response
@@ -169,7 +181,11 @@ class TestAzureOpenAICoverage:
         mock_get_inspector.return_value = mock_inspector
         
         # Setup state in MONITOR mode (not enforce)
-        _state.set_state(initialized=True, llm_rules=None, api_mode_fail_open_llm=True, api_mode_llm="monitor")
+        _state.set_state(
+            initialized=True,
+            llm_rules=None,
+            api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "monitor"}},
+        )
         clear_inspection_context()
         
         # Mock wrapped function

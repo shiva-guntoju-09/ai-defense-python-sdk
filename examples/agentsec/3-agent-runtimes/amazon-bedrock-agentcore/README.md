@@ -148,31 +148,34 @@ vim examples/.env
 
 ## agentsec Configuration
 
-The `agentsec.protect()` call is configured in `_shared/agent_factory.py` with explicit URLs for both LLM and MCP:
+The `agentsec.protect()` call is configured in `_shared/agent_factory.py` with structured dict parameters:
 
 ```python
-import agentsec
+from aidefense.runtime import agentsec
 
 agentsec.protect(
-    # Integration mode: "api" (inspection) or "gateway" (proxy)
     llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
     mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
-    
-    # API Mode Configuration
-    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
-    api_mode_llm_endpoint=os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
-    api_mode_llm_api_key=os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
-    
-    # Gateway Mode Configuration
-    # Note: AgentCore operations use the Bedrock gateway configuration
-    providers={
-        "bedrock": {
-            "gateway_url": os.getenv("AGENTSEC_BEDROCK_GATEWAY_URL"),
-            "gateway_api_key": os.getenv("AGENTSEC_BEDROCK_GATEWAY_API_KEY"),
+    api_mode={
+        "llm": {
+            "mode": os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
+            "endpoint": os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
+            "api_key": os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
+        },
+        "llm_defaults": {"fail_open": True},
+    },
+    gateway_mode={
+        "llm_gateways": {
+            "bedrock-default": {
+                "gateway_url": os.getenv("AGENTSEC_BEDROCK_GATEWAY_URL"),
+                "gateway_api_key": os.getenv("AGENTSEC_BEDROCK_GATEWAY_API_KEY"),
+                "auth_mode": "aws_sigv4",
+                "provider": "bedrock",
+                "default": True,
+            },
         },
     },
-    
-    auto_dotenv=False,  # We load .env manually
+    auto_dotenv=False,
 )
 ```
 

@@ -13,7 +13,7 @@ Usage:
     response = client.models.generate_content(model="gemini-2.0-flash", contents="Hello")
 
 Gateway Mode Support:
-When AGENTSEC_LLM_INTEGRATION_MODE=gateway, calls are sent directly
+When llm_integration_mode=gateway, calls are sent directly
 to the provider-specific AI Defense Gateway in native format.
 """
 
@@ -29,7 +29,7 @@ from ..decision import Decision
 from ..exceptions import SecurityPolicyError
 from ..inspectors.api_llm import LLMInspector
 from . import is_patched, mark_patched
-from ._base import safe_import
+from ._base import safe_import, resolve_gateway_settings
 from ._google_common import (
     normalize_google_messages,
     extract_google_response,
@@ -52,34 +52,13 @@ def _get_inspector() -> LLMInspector:
                 if not _state.is_initialized():
                     logger.warning("agentsec.protect() not called, using default config")
                 _inspector = LLMInspector(
-                    fail_open=_state.get_api_mode_fail_open_llm(),
+                    fail_open=_state.get_api_llm_fail_open(),
                     default_rules=_state.get_llm_rules(),
                 )
                 # Register for cleanup on shutdown
                 from ..inspectors import register_inspector_for_cleanup
                 register_inspector_for_cleanup(_inspector)
     return _inspector
-
-
-def _is_gateway_mode() -> bool:
-    """Check if LLM integration mode is 'gateway'."""
-    return _state.get_llm_integration_mode() == "gateway"
-
-
-def _should_use_gateway() -> bool:
-    """Check if we should use gateway mode (gateway mode enabled, configured, and not skipped)."""
-    from .._context import is_llm_skip_active
-    if is_llm_skip_active():
-        return False
-    if not _is_gateway_mode():
-        return False
-    # Try google_genai first, fall back to vertexai gateway config
-    gateway_url = _state.get_provider_gateway_url("google_genai")
-    gateway_api_key = _state.get_provider_gateway_api_key("google_genai")
-    if not gateway_url:
-        gateway_url = _state.get_provider_gateway_url("vertexai")
-        gateway_api_key = _state.get_provider_gateway_api_key("vertexai")
-    return bool(gateway_url and gateway_api_key)
 
 
 def _should_inspect() -> bool:
@@ -167,6 +146,7 @@ def _handle_google_genai_gateway_call(
     model_name: str,
     contents: Any,
     config: Any = None,
+    gw_settings: Any = None,
 ) -> Any:
     """
     Handle google-genai call via AI Defense Gateway with native format.
@@ -178,24 +158,18 @@ def _handle_google_genai_gateway_call(
         model_name: Model name (e.g., "gemini-2.0-flash")
         contents: Contents to generate from
         config: Optional GenerateContentConfig
+        gw_settings: Resolved gateway settings (url, api_key, fail_open)
         
     Returns:
         Native response wrapped for attribute access
     """
     import httpx
-    
-    # Try google_genai gateway first, fall back to vertexai
-    gateway_url = _state.get_provider_gateway_url("google_genai")
-    gateway_api_key = _state.get_provider_gateway_api_key("google_genai")
-    if not gateway_url:
-        gateway_url = _state.get_provider_gateway_url("vertexai")
-        gateway_api_key = _state.get_provider_gateway_api_key("vertexai")
-    
-    if not gateway_url or not gateway_api_key:
+
+    if not gw_settings or not gw_settings.url or not gw_settings.api_key:
         logger.warning("Gateway mode enabled but google-genai gateway not configured")
         raise SecurityPolicyError(
             Decision.block(reasons=["google-genai gateway not configured"]),
-            "Gateway mode enabled but AGENTSEC_GOOGLE_GENAI_GATEWAY_URL not set"
+            "Gateway mode enabled but google-genai gateway not configured (check gateway_mode.llm_gateways for a google_genai or vertexai provider entry in config)"
         )
     
     # Convert contents to dict format for the request
@@ -243,12 +217,12 @@ def _handle_google_genai_gateway_call(
     logger.debug(f"[GATEWAY] Model: {model_name}")
     
     try:
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=float(gw_settings.timeout)) as client:
             response = client.post(
-                gateway_url,
+                gw_settings.url,
                 json=request_body,
                 headers={
-                    "Authorization": f"Bearer {gateway_api_key}",
+                    "Authorization": f"Bearer {gw_settings.api_key}",
                     "Content-Type": "application/json",
                 },
             )
@@ -263,7 +237,7 @@ def _handle_google_genai_gateway_call(
         
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             # fail_open=True: allow request to proceed by re-raising original error
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original HTTP error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
@@ -276,7 +250,7 @@ def _handle_google_genai_gateway_call(
             )
     except Exception as e:
         logger.error(f"[GATEWAY] Error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise  # Re-raise original error
@@ -508,12 +482,17 @@ def _wrap_generate_content(wrapped, instance, args, kwargs):
     logger.debug(f"╚══════════════════════════════════════════════════════════════")
     
     # Gateway mode: route through AI Defense Gateway
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("google_genai")
+    if gw_settings is None:
+        # Fallback: use vertexai gateway for google_genai
+        gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
         logger.debug(f"[PATCHED CALL] google-genai.generate_content - Gateway mode - routing to AI Defense Gateway")
         return _handle_google_genai_gateway_call(
             model_name=model_name,
             contents=contents,
             config=config,
+            gw_settings=gw_settings,
         )
     
     # API mode (default): use LLMInspector for inspection
@@ -583,13 +562,18 @@ async def _wrap_generate_content_async(wrapped, instance, args, kwargs):
     logger.debug(f"╚══════════════════════════════════════════════════════════════")
     
     # Gateway mode
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("google_genai")
+    if gw_settings is None:
+        # Fallback: use vertexai gateway for google_genai
+        gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
         logger.debug(f"[PATCHED CALL] google-genai.async - Gateway mode - routing to AI Defense Gateway")
         # For now, use sync gateway call (could be made async)
         return _handle_google_genai_gateway_call(
             model_name=model_name,
             contents=contents,
             config=config,
+            gw_settings=gw_settings,
         )
     
     # API mode: Pre-call inspection

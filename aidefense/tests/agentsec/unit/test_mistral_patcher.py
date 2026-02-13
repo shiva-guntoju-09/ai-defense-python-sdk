@@ -93,8 +93,7 @@ class TestMistralPatcherInspection:
         _state.set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_fail_open_llm=True,
-            api_mode_llm="monitor",
+            api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "monitor"}},
         )
         clear_inspection_context()
 
@@ -122,8 +121,7 @@ class TestMistralPatcherInspection:
         _state.set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_fail_open_llm=True,
-            api_mode_llm="enforce",
+            api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "enforce"}},
         )
         clear_inspection_context()
 
@@ -141,16 +139,19 @@ class TestMistralPatcherInspection:
 class TestMistralGatewayMode:
     """Test gateway mode behavior (parity with OpenAI/Cohere)."""
 
-    def test_should_use_gateway_returns_false_when_off(self):
-        from aidefense.runtime.agentsec.patchers.mistral import _should_use_gateway
+    def test_resolve_gateway_returns_none_when_api_mode(self):
+        from aidefense.runtime.agentsec.patchers._base import resolve_gateway_settings
         _state.set_state(initialized=True, llm_integration_mode="api")
-        assert _should_use_gateway() is False
+        assert resolve_gateway_settings("mistral") is None
 
-    def test_should_use_gateway_returns_false_when_not_configured(self):
-        from aidefense.runtime.agentsec.patchers.mistral import _should_use_gateway
-        _state.set_state(initialized=True, llm_integration_mode="gateway")
-        with patch("aidefense.runtime.agentsec.patchers.mistral._state.get_provider_gateway_url", return_value=None):
-            assert _should_use_gateway() is False
+    def test_resolve_gateway_returns_none_when_not_configured(self):
+        from aidefense.runtime.agentsec.patchers._base import resolve_gateway_settings
+        _state.set_state(
+            initialized=True,
+            llm_integration_mode="gateway",
+            gateway_mode={},
+        )
+        assert resolve_gateway_settings("mistral") is None
 
 
 class TestMistralPatchApply:

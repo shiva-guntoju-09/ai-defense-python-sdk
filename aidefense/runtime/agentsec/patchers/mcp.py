@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional, Union
 import wrapt
 
 from .. import _state
+from ..gateway_settings import GatewaySettings
 from .._context import get_inspection_context, set_inspection_context
 from ..decision import Decision
 from ..exceptions import SecurityPolicyError
@@ -34,7 +35,7 @@ logger = logging.getLogger("aidefense.runtime.agentsec.patchers.mcp")
 
 # Global inspector instances with thread-safe initialization
 _api_inspector: Optional[MCPInspector] = None
-_gateway_inspector: Optional[MCPGatewayInspector] = None
+_gateway_pass_through_inspector: Optional[MCPGatewayInspector] = None
 _inspector_lock = threading.Lock()
 
 # Track gateway mode state for URL redirection (log only once)
@@ -50,7 +51,7 @@ def _get_api_inspector() -> MCPInspector:
                 if not _state.is_initialized():
                     logger.warning("agentsec.protect() not called, using default config")
                 _api_inspector = MCPInspector(
-                    fail_open=_state.get_api_mode_fail_open_mcp(),
+                    fail_open=_state.get_api_mcp_fail_open(),
                 )
                 # Register for cleanup on shutdown
                 from ..inspectors import register_inspector_for_cleanup
@@ -58,51 +59,47 @@ def _get_api_inspector() -> MCPInspector:
     return _api_inspector
 
 
-def _get_gateway_inspector() -> MCPGatewayInspector:
-    """Get or create the MCPGatewayInspector instance for gateway mode (thread-safe)."""
-    global _gateway_inspector
-    if _gateway_inspector is None:
+def _get_gateway_settings_for_url(original_url: str) -> Optional[GatewaySettings]:
+    """Resolve MCP gateway settings for a given MCP server URL.
+
+    Looks up the gateway configuration keyed by the exact MCP server URL.
+    Returns None if no gateway is configured for this URL.
+    """
+    config = _state.get_mcp_gateway_for_url(original_url)
+    if config is None:
+        return None
+    return _state.resolve_mcp_gateway_settings(config)
+
+
+def _get_gateway_pass_through_inspector() -> MCPGatewayInspector:
+    """Get pass-through inspector for gateway mode (used when URL redirect happens at transport level)."""
+    global _gateway_pass_through_inspector
+    if _gateway_pass_through_inspector is None:
         with _inspector_lock:
-            if _gateway_inspector is None:
-                gateway_url = _state.get_mcp_gateway_url()
-                gateway_api_key = _state.get_mcp_gateway_api_key()
-                
-                _gateway_inspector = MCPGatewayInspector(
-                    gateway_url=gateway_url,
-                    api_key=gateway_api_key,
-                    fail_open=_state.get_gateway_mode_fail_open_mcp(),
+            if _gateway_pass_through_inspector is None:
+                _gateway_pass_through_inspector = MCPGatewayInspector(
+                    gateway_url=None,
+                    api_key=None,
+                    fail_open=_state.get_gw_mcp_fail_open(),
                 )
-    return _gateway_inspector
+    return _gateway_pass_through_inspector
 
 
 def _get_inspector() -> Union[MCPInspector, MCPGatewayInspector]:
     """Get the appropriate inspector based on integration mode."""
     if _should_use_gateway():
-        return _get_gateway_inspector()
+        return _get_gateway_pass_through_inspector()
     return _get_api_inspector()
-
-
-def _is_gateway_mode() -> bool:
-    """Check if MCP integration mode is 'gateway'."""
-    return _state.get_mcp_integration_mode() == "gateway"
-
-
-def _get_gateway_mode_setting() -> str:
-    """Get the gateway mode setting (off/on)."""
-    return _state.get_mcp_gateway_mode()
 
 
 def _should_use_gateway() -> bool:
     """Check if we should use gateway mode for MCP (not skipped)."""
     from .._context import is_mcp_skip_active
+    if _state.get_mcp_integration_mode() != "gateway":
+        return False
     if is_mcp_skip_active():
         return False
-    if not _is_gateway_mode():
-        return False
-    if _get_gateway_mode_setting() == "off":
-        return False
-    gateway_inspector = _get_gateway_inspector()
-    return gateway_inspector.is_configured
+    return True
 
 
 def _should_inspect() -> bool:
@@ -126,42 +123,49 @@ def _enforce_decision(decision: Decision) -> None:
 def _wrap_streamablehttp_client(wrapped, instance, args, kwargs):
     """
     Wrapper for streamablehttp_client to redirect URL to gateway in gateway mode.
-    
-    In gateway mode, this intercepts the MCP transport creation and redirects
-    the connection to the AI Defense Gateway URL. The gateway then handles
-    inspection and proxies to the actual MCP server.
+
+    Uses URL-based resolution: looks up gateway for the original MCP server URL,
+    then swaps URL and injects auth headers.
     """
     global _gateway_mode_logged
-    
-    if _should_use_gateway():
-        gateway_inspector = _get_gateway_inspector()
-        redirect_url = gateway_inspector.get_redirect_url()
-        
-        if redirect_url:
-            # Get the original URL for logging
-            original_url = kwargs.get('url') or (args[0] if args else None)
-            
-            if not _gateway_mode_logged:
-                logger.info(f"[MCP GATEWAY] Redirecting MCP connections to gateway")
-                logger.debug(f"[MCP GATEWAY] Original URL: {original_url}")
-                logger.debug(f"[MCP GATEWAY] Gateway URL: {redirect_url}")
-                _gateway_mode_logged = True
-            
-            # Replace URL with gateway URL
-            if 'url' in kwargs:
-                kwargs['url'] = redirect_url
-            elif args:
-                args = (redirect_url,) + args[1:]
-            
-            # Add gateway headers
-            gateway_headers = gateway_inspector.get_headers()
-            if gateway_headers:
-                headers = kwargs.get('headers', {})
-                if headers is None:
-                    headers = {}
-                headers.update(gateway_headers)
-                kwargs['headers'] = headers
-    
+
+    if not _should_use_gateway():
+        return wrapped(*args, **kwargs)
+
+    # Extract the original MCP server URL
+    original_url = kwargs.get('url') or (args[0] if args else None)
+    if not original_url:
+        return wrapped(*args, **kwargs)
+
+    # Resolve gateway config for this URL
+    gw_settings = _get_gateway_settings_for_url(original_url)
+    if gw_settings is None:
+        return wrapped(*args, **kwargs)
+
+    if not gw_settings.url:
+        return wrapped(*args, **kwargs)
+
+    if not _gateway_mode_logged:
+        logger.info("[MCP GATEWAY] Redirecting MCP connections to gateway")
+        logger.debug(f"[MCP GATEWAY] Original URL: {original_url}")
+        logger.debug(f"[MCP GATEWAY] Gateway URL: {gw_settings.url}")
+        _gateway_mode_logged = True
+
+    # Replace URL with gateway URL
+    if 'url' in kwargs:
+        kwargs['url'] = gw_settings.url
+    elif args:
+        args = (gw_settings.url,) + args[1:]
+
+    # Inject auth headers from gateway settings
+    if gw_settings.api_key:
+        headers = kwargs.get('headers', {})
+        if headers is None:
+            headers = {}
+        headers = dict(headers)
+        headers['api-key'] = gw_settings.api_key
+        kwargs['headers'] = headers
+
     return wrapped(*args, **kwargs)
 
 
@@ -216,7 +220,7 @@ async def _wrap_call_tool(wrapped, instance, args, kwargs):
     except Exception as e:
         logger.warning(f"[PATCHED CALL] MCP.call_tool({tool_name}) - Request inspection error: {e}")
         # Use inspector's fail_open setting for consistency
-        fail_open = getattr(inspector, 'fail_open', _state.get_api_mode_fail_open_mcp())
+        fail_open = getattr(inspector, 'fail_open', _state.get_api_mcp_fail_open())
         if not fail_open:
             decision = Decision.block(reasons=[f"MCP inspection error: {e}"])
             raise SecurityPolicyError(decision, f"MCP inspection failed: {e}")
@@ -293,7 +297,7 @@ async def _wrap_get_prompt(wrapped, instance, args, kwargs):
     except Exception as e:
         logger.warning(f"[PATCHED CALL] MCP.get_prompt({prompt_name}) - Request inspection error: {e}")
         # Use inspector's fail_open setting for consistency
-        fail_open = getattr(inspector, 'fail_open', _state.get_api_mode_fail_open_mcp())
+        fail_open = getattr(inspector, 'fail_open', _state.get_api_mcp_fail_open())
         if not fail_open:
             decision = Decision.block(reasons=[f"MCP inspection error: {e}"])
             raise SecurityPolicyError(decision, f"MCP inspection failed: {e}")
@@ -367,7 +371,7 @@ async def _wrap_read_resource(wrapped, instance, args, kwargs):
     except Exception as e:
         logger.warning(f"[PATCHED CALL] MCP.read_resource({resource_uri}) - Request inspection error: {e}")
         # Use inspector's fail_open setting for consistency
-        fail_open = getattr(inspector, 'fail_open', _state.get_api_mode_fail_open_mcp())
+        fail_open = getattr(inspector, 'fail_open', _state.get_api_mcp_fail_open())
         if not fail_open:
             decision = Decision.block(reasons=[f"MCP inspection error: {e}"])
             raise SecurityPolicyError(decision, f"MCP inspection failed: {e}")

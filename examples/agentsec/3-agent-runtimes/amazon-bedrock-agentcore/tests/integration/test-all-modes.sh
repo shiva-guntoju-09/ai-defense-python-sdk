@@ -204,6 +204,9 @@ test_mcp_protection() {
     # Set the integration mode environment variable
     export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
     
+    # Enable debug logging so MCP inspection log lines are captured in the log file
+    export AGENTSEC_LOG_LEVEL="DEBUG"
+    
     # Run the test
     local start_time=$(date +%s)
     
@@ -302,36 +305,54 @@ test_direct_local() {
     export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
     export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
     
-    # Enable debug logging for verbose output
-    if [ "$VERBOSE" = "true" ]; then
-        export AGENTSEC_LOG_LEVEL="DEBUG"
-    fi
+    # Enable debug logging so inspection log lines are captured in the log file
+    export AGENTSEC_LOG_LEVEL="DEBUG"
     
     local start_time=$(date +%s)
     
     # Run the agent directly using the shared agent factory
     if [ -n "$TIMEOUT_CMD" ]; then
         $TIMEOUT_CMD "$TIMEOUT_SECONDS" poetry run python -c "
-import sys
+import sys, os
 sys.path.insert(0, '$PROJECT_DIR')
 from _shared import get_agent
 
 print('[test] Running Strands agent with Bedrock (protected by agentsec)...')
 result = get_agent()('$TEST_QUESTION')
 print(f'[test] Result: {result}')
-print('[SUCCESS] Local test completed')
+print('[SUCCESS] LLM test completed')
+
+# Also exercise MCP tool protection
+if os.getenv('MCP_SERVER_URL'):
+    print('[test] Testing MCP tool protection...')
+    from _shared.mcp_tools import _sync_call_mcp_tool
+    mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+    print(f'[test] MCP Result: {mcp_result[:100]}...')
+    print('[MCP_SUCCESS] MCP tool call completed')
+else:
+    print('[test] MCP_SERVER_URL not set, skipping MCP test')
 " > "$log_file" 2>&1
         local exit_code=$?
     else
         poetry run python -c "
-import sys
+import sys, os
 sys.path.insert(0, '$PROJECT_DIR')
 from _shared import get_agent
 
 print('[test] Running Strands agent with Bedrock (protected by agentsec)...')
 result = get_agent()('$TEST_QUESTION')
 print(f'[test] Result: {result}')
-print('[SUCCESS] Local test completed')
+print('[SUCCESS] LLM test completed')
+
+# Also exercise MCP tool protection
+if os.getenv('MCP_SERVER_URL'):
+    print('[test] Testing MCP tool protection...')
+    from _shared.mcp_tools import _sync_call_mcp_tool
+    mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+    print(f'[test] MCP Result: {mcp_result[:100]}...')
+    print('[MCP_SUCCESS] MCP tool call completed')
+else:
+    print('[test] MCP_SERVER_URL not set, skipping MCP test')
 " > "$log_file" 2>&1
         local exit_code=$?
     fi
@@ -340,6 +361,15 @@ print('[SUCCESS] Local test completed')
     local duration=$((end_time - start_time))
     
     log_info "Completed in ${duration}s (exit code: $exit_code)"
+    
+    # Skip gateway tests if gateway URL is not configured
+    if [ "$integration_mode" = "gateway" ] && grep -q "gateway not configured\|Gateway mode enabled but.*not configured" "$log_file"; then
+        log_skip "Gateway mode skipped (Bedrock gateway URL not configured)"
+        echo ""
+        echo -e "  ${YELLOW}${BOLD}► Direct LOCAL [$integration_mode]: SKIPPED (gateway not configured)${NC}"
+        ((TESTS_SKIPPED++))
+        return 0
+    fi
     
     # Validate results
     local all_checks_passed=true
@@ -352,11 +382,11 @@ print('[SUCCESS] Local test completed')
         all_checks_passed=false
     fi
     
-    # Check 2: Request inspection
+    # Check 2: LLM Request inspection
     if grep -qi "Request inspection\|PATCHED CALL" "$log_file"; then
-        log_pass "Request inspection executed"
+        log_pass "LLM Request inspection executed"
     else
-        log_fail "Request inspection NOT executed"
+        log_fail "LLM Request inspection NOT executed"
         all_checks_passed=false
     fi
     
@@ -368,7 +398,27 @@ print('[SUCCESS] Local test completed')
         all_checks_passed=false
     fi
     
-    # Check 4: No security blocks
+    # Check 4: MCP Request inspection
+    if grep -qi "MCP.*Request inspection\|MCP TOOL CALL.*fetch\|call_tool.*fetch.*Request" "$log_file"; then
+        log_pass "MCP Request inspection executed"
+    elif grep -q "MCP_SERVER_URL not set" "$log_file"; then
+        log_skip "MCP test skipped (MCP_SERVER_URL not set)"
+    else
+        log_fail "MCP Request inspection NOT executed"
+        all_checks_passed=false
+    fi
+    
+    # Check 5: MCP Response inspection
+    if grep -qi "MCP.*Response inspection\|call_tool.*Response.*allow\|Response decision" "$log_file"; then
+        log_pass "MCP Response inspection executed"
+    elif grep -q "MCP_SERVER_URL not set" "$log_file"; then
+        : # Already reported skip above
+    else
+        log_fail "MCP Response inspection NOT executed"
+        all_checks_passed=false
+    fi
+    
+    # Check 6: No security blocks
     if grep -qE "SecurityPolicyError|BLOCKED" "$log_file"; then
         log_fail "Security block found in output"
         all_checks_passed=false
@@ -379,7 +429,7 @@ print('[SUCCESS] Local test completed')
     if [ "$VERBOSE" = "true" ]; then
         echo ""
         echo -e "    ${MAGENTA}─── Log Output ───${NC}"
-        grep -E "(Request inspection|Response inspection|AI Defense|decision|Patched|SUCCESS|Result)" "$log_file" | head -20 | sed 's/^/    /'
+        grep -E "(Request inspection|Response inspection|AI Defense|decision|Patched|SUCCESS|Result|MCP)" "$log_file" | head -20 | sed 's/^/    /'
     fi
     
     if [ "$all_checks_passed" = "true" ]; then
@@ -411,36 +461,54 @@ test_container_local() {
     export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
     export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
     
-    # Enable debug logging for verbose output
-    if [ "$VERBOSE" = "true" ]; then
-        export AGENTSEC_LOG_LEVEL="DEBUG"
-    fi
+    # Enable debug logging so inspection log lines are captured in the log file
+    export AGENTSEC_LOG_LEVEL="DEBUG"
     
     local start_time=$(date +%s)
     
     # Run the container app code locally (same agent, different entrypoint)
     if [ -n "$TIMEOUT_CMD" ]; then
         $TIMEOUT_CMD "$TIMEOUT_SECONDS" poetry run python -c "
-import sys
+import sys, os
 sys.path.insert(0, '$PROJECT_DIR')
 from _shared import get_agent
 
 print('[test] Running container agent code locally (protected by agentsec)...')
 result = get_agent()('$TEST_QUESTION')
 print(f'[test] Result: {result}')
-print('[SUCCESS] Container local test completed')
+print('[SUCCESS] LLM test completed')
+
+# Also exercise MCP tool protection
+if os.getenv('MCP_SERVER_URL'):
+    print('[test] Testing MCP tool protection...')
+    from _shared.mcp_tools import _sync_call_mcp_tool
+    mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+    print(f'[test] MCP Result: {mcp_result[:100]}...')
+    print('[MCP_SUCCESS] MCP tool call completed')
+else:
+    print('[test] MCP_SERVER_URL not set, skipping MCP test')
 " > "$log_file" 2>&1
         local exit_code=$?
     else
         poetry run python -c "
-import sys
+import sys, os
 sys.path.insert(0, '$PROJECT_DIR')
 from _shared import get_agent
 
 print('[test] Running container agent code locally (protected by agentsec)...')
 result = get_agent()('$TEST_QUESTION')
 print(f'[test] Result: {result}')
-print('[SUCCESS] Container local test completed')
+print('[SUCCESS] LLM test completed')
+
+# Also exercise MCP tool protection
+if os.getenv('MCP_SERVER_URL'):
+    print('[test] Testing MCP tool protection...')
+    from _shared.mcp_tools import _sync_call_mcp_tool
+    mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+    print(f'[test] MCP Result: {mcp_result[:100]}...')
+    print('[MCP_SUCCESS] MCP tool call completed')
+else:
+    print('[test] MCP_SERVER_URL not set, skipping MCP test')
 " > "$log_file" 2>&1
         local exit_code=$?
     fi
@@ -450,7 +518,16 @@ print('[SUCCESS] Container local test completed')
     
     log_info "Completed in ${duration}s (exit code: $exit_code)"
     
-    # Validate results (same as direct local)
+    # Skip gateway tests if gateway URL is not configured
+    if [ "$integration_mode" = "gateway" ] && grep -q "gateway not configured\|Gateway mode enabled but.*not configured" "$log_file"; then
+        log_skip "Gateway mode skipped (Bedrock gateway URL not configured)"
+        echo ""
+        echo -e "  ${YELLOW}${BOLD}► Container LOCAL [$integration_mode]: SKIPPED (gateway not configured)${NC}"
+        ((TESTS_SKIPPED++))
+        return 0
+    fi
+    
+    # Validate results
     local all_checks_passed=true
     
     if grep -q "Patched.*bedrock\|bedrock.*patched\|'bedrock'" "$log_file"; then
@@ -461,9 +538,9 @@ print('[SUCCESS] Container local test completed')
     fi
     
     if grep -qi "Request inspection\|PATCHED CALL" "$log_file"; then
-        log_pass "Request inspection executed"
+        log_pass "LLM Request inspection executed"
     else
-        log_fail "Request inspection NOT executed"
+        log_fail "LLM Request inspection NOT executed"
         all_checks_passed=false
     fi
     
@@ -471,6 +548,26 @@ print('[SUCCESS] Container local test completed')
         log_pass "Agent returned result"
     else
         log_fail "No result from agent"
+        all_checks_passed=false
+    fi
+    
+    # Check: MCP Request inspection
+    if grep -qi "MCP.*Request inspection\|MCP TOOL CALL.*fetch\|call_tool.*fetch.*Request" "$log_file"; then
+        log_pass "MCP Request inspection executed"
+    elif grep -q "MCP_SERVER_URL not set" "$log_file"; then
+        log_skip "MCP test skipped (MCP_SERVER_URL not set)"
+    else
+        log_fail "MCP Request inspection NOT executed"
+        all_checks_passed=false
+    fi
+    
+    # Check: MCP Response inspection
+    if grep -qi "MCP.*Response inspection\|call_tool.*Response.*allow\|Response decision" "$log_file"; then
+        log_pass "MCP Response inspection executed"
+    elif grep -q "MCP_SERVER_URL not set" "$log_file"; then
+        : # Already reported skip above
+    else
+        log_fail "MCP Response inspection NOT executed"
         all_checks_passed=false
     fi
     
@@ -484,7 +581,7 @@ print('[SUCCESS] Container local test completed')
     if [ "$VERBOSE" = "true" ]; then
         echo ""
         echo -e "    ${MAGENTA}─── Log Output ───${NC}"
-        grep -E "(Request inspection|Response inspection|AI Defense|decision|Patched|SUCCESS|Result)" "$log_file" | head -20 | sed 's/^/    /'
+        grep -E "(Request inspection|Response inspection|AI Defense|decision|Patched|SUCCESS|Result|MCP)" "$log_file" | head -20 | sed 's/^/    /'
     fi
     
     if [ "$all_checks_passed" = "true" ]; then
@@ -516,18 +613,15 @@ test_lambda_local() {
     export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
     export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
     
-    # Enable debug logging for verbose output
-    if [ "$VERBOSE" = "true" ]; then
-        export AGENTSEC_LOG_LEVEL="DEBUG"
-    fi
+    # Enable debug logging so inspection log lines are captured in the log file
+    export AGENTSEC_LOG_LEVEL="DEBUG"
     
     local start_time=$(date +%s)
     
     # Run the Lambda handler directly
     if [ -n "$TIMEOUT_CMD" ]; then
         $TIMEOUT_CMD "$TIMEOUT_SECONDS" poetry run python -c "
-import sys
-import json
+import sys, os, json
 sys.path.insert(0, '$PROJECT_DIR/lambda-deploy')
 sys.path.insert(0, '$PROJECT_DIR')
 
@@ -539,13 +633,22 @@ event = {'prompt': '$TEST_QUESTION'}
 context = None
 result = handler(event, context)
 print(f'[test] Result: {json.dumps(result)}')
-print('[SUCCESS] Lambda local test completed')
+print('[SUCCESS] LLM test completed')
+
+# Also exercise MCP tool protection
+if os.getenv('MCP_SERVER_URL'):
+    print('[test] Testing MCP tool protection...')
+    from _shared.mcp_tools import _sync_call_mcp_tool
+    mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+    print(f'[test] MCP Result: {mcp_result[:100]}...')
+    print('[MCP_SUCCESS] MCP tool call completed')
+else:
+    print('[test] MCP_SERVER_URL not set, skipping MCP test')
 " > "$log_file" 2>&1
         local exit_code=$?
     else
         poetry run python -c "
-import sys
-import json
+import sys, os, json
 sys.path.insert(0, '$PROJECT_DIR/lambda-deploy')
 sys.path.insert(0, '$PROJECT_DIR')
 
@@ -557,7 +660,17 @@ event = {'prompt': '$TEST_QUESTION'}
 context = None
 result = handler(event, context)
 print(f'[test] Result: {json.dumps(result)}')
-print('[SUCCESS] Lambda local test completed')
+print('[SUCCESS] LLM test completed')
+
+# Also exercise MCP tool protection
+if os.getenv('MCP_SERVER_URL'):
+    print('[test] Testing MCP tool protection...')
+    from _shared.mcp_tools import _sync_call_mcp_tool
+    mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+    print(f'[test] MCP Result: {mcp_result[:100]}...')
+    print('[MCP_SUCCESS] MCP tool call completed')
+else:
+    print('[test] MCP_SERVER_URL not set, skipping MCP test')
 " > "$log_file" 2>&1
         local exit_code=$?
     fi
@@ -566,6 +679,15 @@ print('[SUCCESS] Lambda local test completed')
     local duration=$((end_time - start_time))
     
     log_info "Completed in ${duration}s (exit code: $exit_code)"
+    
+    # Skip gateway tests if gateway URL is not configured
+    if [ "$integration_mode" = "gateway" ] && grep -q "gateway not configured\|Gateway mode enabled but.*not configured" "$log_file"; then
+        log_skip "Gateway mode skipped (Bedrock gateway URL not configured)"
+        echo ""
+        echo -e "  ${YELLOW}${BOLD}► Lambda LOCAL [$integration_mode]: SKIPPED (gateway not configured)${NC}"
+        ((TESTS_SKIPPED++))
+        return 0
+    fi
     
     # Validate results
     local all_checks_passed=true
@@ -578,9 +700,9 @@ print('[SUCCESS] Lambda local test completed')
     fi
     
     if grep -qi "Request inspection\|PATCHED CALL" "$log_file"; then
-        log_pass "Request inspection executed"
+        log_pass "LLM Request inspection executed"
     else
-        log_fail "Request inspection NOT executed"
+        log_fail "LLM Request inspection NOT executed"
         all_checks_passed=false
     fi
     
@@ -588,6 +710,26 @@ print('[SUCCESS] Lambda local test completed')
         log_pass "Lambda handler returned result"
     else
         log_fail "No result from Lambda handler"
+        all_checks_passed=false
+    fi
+    
+    # Check: MCP Request inspection
+    if grep -qi "MCP.*Request inspection\|MCP TOOL CALL.*fetch\|call_tool.*fetch.*Request" "$log_file"; then
+        log_pass "MCP Request inspection executed"
+    elif grep -q "MCP_SERVER_URL not set" "$log_file"; then
+        log_skip "MCP test skipped (MCP_SERVER_URL not set)"
+    else
+        log_fail "MCP Request inspection NOT executed"
+        all_checks_passed=false
+    fi
+    
+    # Check: MCP Response inspection
+    if grep -qi "MCP.*Response inspection\|call_tool.*Response.*allow\|Response decision" "$log_file"; then
+        log_pass "MCP Response inspection executed"
+    elif grep -q "MCP_SERVER_URL not set" "$log_file"; then
+        : # Already reported skip above
+    else
+        log_fail "MCP Response inspection NOT executed"
         all_checks_passed=false
     fi
     
@@ -601,7 +743,7 @@ print('[SUCCESS] Lambda local test completed')
     if [ "$VERBOSE" = "true" ]; then
         echo ""
         echo -e "    ${MAGENTA}─── Log Output ───${NC}"
-        grep -E "(Request inspection|Response inspection|AI Defense|decision|Patched|SUCCESS|Result)" "$log_file" | head -20 | sed 's/^/    /'
+        grep -E "(Request inspection|Response inspection|AI Defense|decision|Patched|SUCCESS|Result|MCP)" "$log_file" | head -20 | sed 's/^/    /'
     fi
     
     if [ "$all_checks_passed" = "true" ]; then

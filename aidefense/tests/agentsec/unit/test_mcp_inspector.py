@@ -117,9 +117,9 @@ class TestMCPInspectorConstructor:
             
             assert inspector.api_key is None
             assert inspector.endpoint is None
-            # No timeout set by user or state → SDK uses its default (agentsec leaves None)
-            assert inspector.timeout_ms is None
-            assert inspector.retry_attempts == 1
+            # Default timeout from api_mode.mcp_defaults (5 seconds = 5000 ms)
+            assert inspector.timeout_ms == 5000
+            assert inspector.retry_attempts == 2  # api_mcp default
             assert inspector.fail_open is True
             # _request_id_counter is now itertools.count() for thread safety
             assert next(inspector._request_id_counter) == 1

@@ -4,11 +4,16 @@ Vertex AI client autopatching.
 This module provides automatic inspection for vertexai SDK calls
 by patching GenerativeModel.generate_content() and generate_content_async().
 
+It also patches the private _generate_content() method which is called
+directly by ChatSession.send_message() (used by AutoGen's GeminiClient),
+bypassing the public generate_content() method.
+
 Gateway Mode Support:
-When AGENTSEC_LLM_INTEGRATION_MODE=gateway, Vertex AI calls are sent directly
+When llm_integration_mode=gateway, Vertex AI calls are sent directly
 to the provider-specific AI Defense Gateway in native format.
 """
 
+import contextvars
 import logging
 import threading
 from typing import Any, Dict, Iterator, List, Optional
@@ -21,10 +26,16 @@ from ..decision import Decision
 from ..exceptions import SecurityPolicyError
 from ..inspectors.api_llm import LLMInspector
 from . import is_patched, mark_patched
-from ._base import safe_import
+from ._base import safe_import, resolve_gateway_settings
 from ._google_common import (
     normalize_google_messages,
     extract_google_response,
+)
+
+# Reentrancy guard: when generate_content() wrapper is active, skip the
+# _generate_content() wrapper to avoid double inspection.
+_vertexai_inspection_active: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_vertexai_inspection_active", default=False
 )
 
 logger = logging.getLogger("aidefense.runtime.agentsec.patchers.vertexai")
@@ -48,30 +59,13 @@ def _get_inspector() -> LLMInspector:
                 if not _state.is_initialized():
                     logger.warning("agentsec.protect() not called, using default config")
                 _inspector = LLMInspector(
-                    fail_open=_state.get_api_mode_fail_open_llm(),
+                    fail_open=_state.get_api_llm_fail_open(),
                     default_rules=_state.get_llm_rules(),
                 )
                 # Register for cleanup on shutdown
                 from ..inspectors import register_inspector_for_cleanup
                 register_inspector_for_cleanup(_inspector)
     return _inspector
-
-
-def _is_gateway_mode() -> bool:
-    """Check if LLM integration mode is 'gateway'."""
-    return _state.get_llm_integration_mode() == "gateway"
-
-
-def _should_use_gateway() -> bool:
-    """Check if we should use gateway mode (gateway mode enabled, configured, and not skipped)."""
-    from .._context import is_llm_skip_active
-    if is_llm_skip_active():
-        return False
-    if not _is_gateway_mode():
-        return False
-    gateway_url = _state.get_provider_gateway_url("vertexai")
-    gateway_api_key = _state.get_provider_gateway_api_key("vertexai")
-    return bool(gateway_url and gateway_api_key)
 
 
 def _should_inspect() -> bool:
@@ -96,6 +90,7 @@ def _enforce_decision(decision: Decision) -> None:
 def _handle_vertexai_gateway_call(
     model_name: str,
     contents: Any,
+    gw_settings: Any,
     generation_config: Optional[Dict] = None,
     tools: Optional[List] = None,
     tool_config: Optional[Dict] = None,
@@ -120,14 +115,14 @@ def _handle_vertexai_gateway_call(
     """
     import httpx
     
-    gateway_url = _state.get_provider_gateway_url("vertexai")
-    gateway_api_key = _state.get_provider_gateway_api_key("vertexai")
+    gateway_url = gw_settings.url
+    gateway_api_key = gw_settings.api_key
     
     if not gateway_url or not gateway_api_key:
         logger.warning("Gateway mode enabled but Vertex AI gateway not configured")
         raise SecurityPolicyError(
             Decision.block(reasons=["Vertex AI gateway not configured"]),
-            "Gateway mode enabled but AGENTSEC_VERTEXAI_GATEWAY_URL not set"
+            "Gateway mode enabled but Vertex AI gateway not configured (check gateway_mode.llm_gateways for a vertexai provider entry in config)"
         )
     
     # Convert contents to dict format for the request
@@ -179,7 +174,7 @@ def _handle_vertexai_gateway_call(
     logger.debug(f"[GATEWAY] Model: {model_name}")
     
     try:
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=float(gw_settings.timeout)) as client:
             response = client.post(
                 gateway_url,
                 json=request_body,
@@ -199,7 +194,7 @@ def _handle_vertexai_gateway_call(
         
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             # fail_open=True: allow request to proceed by re-raising original error
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original HTTP error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
@@ -212,7 +207,7 @@ def _handle_vertexai_gateway_call(
             )
     except Exception as e:
         logger.error(f"[GATEWAY] Error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise  # Re-raise original error
@@ -429,6 +424,7 @@ class AsyncGoogleStreamingInspectionWrapper:
 async def _handle_vertexai_gateway_call_async(
     model_name: str,
     contents: Any,
+    gw_settings: Any,
     generation_config: Optional[Dict] = None,
     tools: Optional[List] = None,
     tool_config: Optional[Dict] = None,
@@ -437,14 +433,14 @@ async def _handle_vertexai_gateway_call_async(
     """Async version of _handle_vertexai_gateway_call."""
     import httpx
     
-    gateway_url = _state.get_provider_gateway_url("vertexai")
-    gateway_api_key = _state.get_provider_gateway_api_key("vertexai")
+    gateway_url = gw_settings.url
+    gateway_api_key = gw_settings.api_key
     
     if not gateway_url or not gateway_api_key:
         logger.warning("Gateway mode enabled but Vertex AI gateway not configured")
         raise SecurityPolicyError(
             Decision.block(reasons=["Vertex AI gateway not configured"]),
-            "Gateway mode enabled but AGENTSEC_VERTEXAI_GATEWAY_URL not set"
+            "Gateway mode enabled but Vertex AI gateway not configured (check gateway_mode.llm_gateways for a vertexai provider entry in config)"
         )
     
     # Convert contents to dict format
@@ -495,7 +491,7 @@ async def _handle_vertexai_gateway_call_async(
     logger.debug(f"[GATEWAY] Sending native Vertex AI request to gateway (async)")
     
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=float(gw_settings.timeout)) as client:
             response = await client.post(
                 gateway_url,
                 json=request_body,
@@ -514,7 +510,7 @@ async def _handle_vertexai_gateway_call_async(
         
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             # fail_open=True: allow request to proceed by re-raising original error
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original HTTP error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
@@ -527,7 +523,7 @@ async def _handle_vertexai_gateway_call_async(
             )
     except Exception as e:
         logger.error(f"[GATEWAY] Error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise  # Re-raise original error
@@ -539,7 +535,41 @@ def _wrap_generate_content(wrapped, instance, args, kwargs):
     
     Supports both API mode (inspection via AI Defense API) and Gateway mode
     (routing through AI Defense Gateway with format conversion).
+    
+    Sets reentrancy guard so that the private _generate_content() wrapper
+    (which generate_content() calls internally) does not double-inspect.
     """
+    # Set reentrancy guard to prevent _generate_content wrapper from firing
+    token = _vertexai_inspection_active.set(True)
+    try:
+        return _inspect_vertexai_sync(wrapped, instance, args, kwargs, entry="generate_content")
+    finally:
+        _vertexai_inspection_active.reset(token)
+
+
+def _wrap_private_generate_content(wrapped, instance, args, kwargs):
+    """Wrapper for GenerativeModel._generate_content() (private method).
+    
+    This catches calls from ChatSession.send_message() which calls
+    _generate_content() directly, bypassing the public generate_content().
+    
+    If the reentrancy guard is set (meaning we're already inside the
+    generate_content wrapper), this is a no-op pass-through.
+    """
+    if _vertexai_inspection_active.get():
+        # Already being inspected by generate_content wrapper
+        return wrapped(*args, **kwargs)
+    
+    # Direct call (e.g., from ChatSession.send_message) - apply inspection
+    token = _vertexai_inspection_active.set(True)
+    try:
+        return _inspect_vertexai_sync(wrapped, instance, args, kwargs, entry="_generate_content")
+    finally:
+        _vertexai_inspection_active.reset(token)
+
+
+def _inspect_vertexai_sync(wrapped, instance, args, kwargs, entry="generate_content"):
+    """Shared sync inspection logic for both generate_content and _generate_content."""
     # Get model name
     model_name = "unknown"
     if hasattr(instance, "model_name"):
@@ -548,7 +578,7 @@ def _wrap_generate_content(wrapped, instance, args, kwargs):
         model_name = instance._model_name
     
     if not _should_inspect():
-        logger.debug(f"[PATCHED CALL] VertexAI.generate_content - inspection skipped (mode=off or already done)")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - inspection skipped (mode=off or already done)")
         return wrapped(*args, **kwargs)
     
     # Extract contents from args/kwargs
@@ -566,16 +596,18 @@ def _wrap_generate_content(wrapped, instance, args, kwargs):
     logger.debug(f"")
     logger.debug(f"╔══════════════════════════════════════════════════════════════")
     logger.debug(f"║ [PATCHED] LLM CALL: {model_name}")
-    logger.debug(f"║ Operation: VertexAI.generate_content | LLM Mode: {mode} | Integration: {integration_mode}")
+    logger.debug(f"║ Operation: VertexAI.{entry} | LLM Mode: {mode} | Integration: {integration_mode}")
     logger.debug(f"╚══════════════════════════════════════════════════════════════")
     
     # Gateway mode: route through AI Defense Gateway with format conversion
-    if _should_use_gateway():
-        logger.debug(f"[PATCHED CALL] VertexAI.generate_content - Gateway mode - routing to AI Defense Gateway")
+    gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Gateway mode - routing to AI Defense Gateway")
         if not stream:  # Non-streaming only for now
             return _handle_vertexai_gateway_call(
                 model_name=model_name,
                 contents=contents,
+                gw_settings=gw_settings,
                 generation_config=kwargs.get("generation_config"),
                 tools=kwargs.get("tools"),
                 tool_config=kwargs.get("tool_config"),
@@ -587,45 +619,70 @@ def _wrap_generate_content(wrapped, instance, args, kwargs):
     # API mode (default): use LLMInspector for inspection
     # Pre-call inspection
     if normalized:
-        logger.debug(f"[PATCHED CALL] VertexAI.generate_content - Request inspection ({len(normalized)} messages)")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Request inspection ({len(normalized)} messages)")
         inspector = _get_inspector()
         decision = inspector.inspect_conversation(normalized, metadata)
-        logger.debug(f"[PATCHED CALL] VertexAI.generate_content - Request decision: {decision.action}")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Request decision: {decision.action}")
         set_inspection_context(decision=decision)
         _enforce_decision(decision)
     
     # Call the original
-    logger.debug(f"[PATCHED CALL] VertexAI.generate_content - calling original method")
+    logger.debug(f"[PATCHED CALL] VertexAI.{entry} - calling original method")
     response = wrapped(*args, **kwargs)
     
     # Handle streaming vs non-streaming
     if stream:
-        logger.debug(f"[PATCHED CALL] VertexAI.generate_content - streaming response, wrapping for inspection")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - streaming response, wrapping for inspection")
         return GoogleStreamingInspectionWrapper(response, normalized, metadata)
     
     # Post-call inspection for non-streaming
     assistant_content = extract_google_response(response)
     if assistant_content and normalized:
-        logger.debug(f"[PATCHED CALL] VertexAI.generate_content - Response inspection (response: {len(assistant_content)} chars)")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Response inspection (response: {len(assistant_content)} chars)")
         messages_with_response = normalized + [
             {"role": "assistant", "content": assistant_content}
         ]
         inspector = _get_inspector()
         decision = inspector.inspect_conversation(messages_with_response, metadata)
-        logger.debug(f"[PATCHED CALL] VertexAI.generate_content - Response decision: {decision.action}")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Response decision: {decision.action}")
         set_inspection_context(decision=decision, done=True)
         _enforce_decision(decision)
     
-    logger.debug(f"[PATCHED CALL] VertexAI.generate_content - complete")
+    logger.debug(f"[PATCHED CALL] VertexAI.{entry} - complete")
     return response
 
 
 async def _wrap_generate_content_async(wrapped, instance, args, kwargs):
     """Async wrapper for GenerativeModel.generate_content_async().
     
-    Supports both API mode (inspection via AI Defense API) and Gateway mode
-    (routing through AI Defense Gateway with format conversion).
+    Sets reentrancy guard so that the private _generate_content_async() wrapper
+    does not double-inspect.
     """
+    token = _vertexai_inspection_active.set(True)
+    try:
+        return await _inspect_vertexai_async(wrapped, instance, args, kwargs, entry="generate_content_async")
+    finally:
+        _vertexai_inspection_active.reset(token)
+
+
+async def _wrap_private_generate_content_async(wrapped, instance, args, kwargs):
+    """Async wrapper for GenerativeModel._generate_content_async() (private method).
+    
+    Catches calls from ChatSession.send_message_async() which calls
+    _generate_content_async() directly.
+    """
+    if _vertexai_inspection_active.get():
+        return await wrapped(*args, **kwargs)
+    
+    token = _vertexai_inspection_active.set(True)
+    try:
+        return await _inspect_vertexai_async(wrapped, instance, args, kwargs, entry="_generate_content_async")
+    finally:
+        _vertexai_inspection_active.reset(token)
+
+
+async def _inspect_vertexai_async(wrapped, instance, args, kwargs, entry="generate_content_async"):
+    """Shared async inspection logic for both generate_content_async and _generate_content_async."""
     # Get model name
     model_name = "unknown"
     if hasattr(instance, "model_name"):
@@ -634,7 +691,7 @@ async def _wrap_generate_content_async(wrapped, instance, args, kwargs):
         model_name = instance._model_name
     
     if not _should_inspect():
-        logger.debug(f"[PATCHED CALL] VertexAI.async.generate_content - inspection skipped")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - inspection skipped")
         return await wrapped(*args, **kwargs)
     
     # Extract contents from args/kwargs
@@ -652,16 +709,18 @@ async def _wrap_generate_content_async(wrapped, instance, args, kwargs):
     logger.debug(f"")
     logger.debug(f"╔══════════════════════════════════════════════════════════════")
     logger.debug(f"║ [PATCHED] LLM CALL (async): {model_name}")
-    logger.debug(f"║ Operation: VertexAI.async.generate_content | LLM Mode: {mode} | Integration: {integration_mode}")
+    logger.debug(f"║ Operation: VertexAI.{entry} | LLM Mode: {mode} | Integration: {integration_mode}")
     logger.debug(f"╚══════════════════════════════════════════════════════════════")
     
     # Gateway mode: route through AI Defense Gateway with format conversion
-    if _should_use_gateway():
-        logger.debug(f"[PATCHED CALL] VertexAI.async.generate_content - Gateway mode - routing to AI Defense Gateway")
+    gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Gateway mode - routing to AI Defense Gateway")
         if not stream:  # Non-streaming only for now
             return await _handle_vertexai_gateway_call_async(
                 model_name=model_name,
                 contents=contents,
+                gw_settings=gw_settings,
                 generation_config=kwargs.get("generation_config"),
                 tools=kwargs.get("tools"),
                 tool_config=kwargs.get("tool_config"),
@@ -673,41 +732,51 @@ async def _wrap_generate_content_async(wrapped, instance, args, kwargs):
     # API mode (default): use LLMInspector for inspection
     # Pre-call inspection
     if normalized:
-        logger.debug(f"[PATCHED CALL] VertexAI.async - Request inspection ({len(normalized)} messages)")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Request inspection ({len(normalized)} messages)")
         inspector = _get_inspector()
         decision = await inspector.ainspect_conversation(normalized, metadata)
-        logger.debug(f"[PATCHED CALL] VertexAI.async - Request decision: {decision.action}")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Request decision: {decision.action}")
         set_inspection_context(decision=decision)
         _enforce_decision(decision)
     
     # Call the original
-    logger.debug(f"[PATCHED CALL] VertexAI.async - calling original method")
+    logger.debug(f"[PATCHED CALL] VertexAI.{entry} - calling original method")
     response = await wrapped(*args, **kwargs)
     
     # Handle streaming
     if stream:
-        logger.debug(f"[PATCHED CALL] VertexAI.async - streaming response, wrapping for inspection")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - streaming response, wrapping for inspection")
         return AsyncGoogleStreamingInspectionWrapper(response, normalized, metadata)
     
     # Post-call inspection
     assistant_content = extract_google_response(response)
     if assistant_content and normalized:
-        logger.debug(f"[PATCHED CALL] VertexAI.async - Response inspection")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Response inspection")
         messages_with_response = normalized + [
             {"role": "assistant", "content": assistant_content}
         ]
         decision = await inspector.ainspect_conversation(messages_with_response, metadata)
-        logger.debug(f"[PATCHED CALL] VertexAI.async - Response decision: {decision.action}")
+        logger.debug(f"[PATCHED CALL] VertexAI.{entry} - Response decision: {decision.action}")
         set_inspection_context(decision=decision, done=True)
         _enforce_decision(decision)
     
-    logger.debug(f"[PATCHED CALL] VertexAI.async - complete")
+    logger.debug(f"[PATCHED CALL] VertexAI.{entry} - complete")
     return response
 
 
 def patch_vertexai() -> bool:
     """
     Patch vertexai for automatic inspection.
+    
+    Patches both the public methods (generate_content, generate_content_async)
+    and the private methods (_generate_content, _generate_content_async).
+    
+    The private methods are needed because ChatSession.send_message() (used
+    by AutoGen's GeminiClient) calls _generate_content() directly, bypassing
+    the public generate_content() method.
+    
+    A reentrancy guard ensures that calls through generate_content() (which
+    internally calls _generate_content()) are only inspected once.
     
     Returns:
         True if patching was successful, False otherwise
@@ -721,19 +790,43 @@ def patch_vertexai() -> bool:
         return False
     
     try:
-        # Patch GenerativeModel.generate_content
+        # Patch public GenerativeModel.generate_content
         wrapt.wrap_function_wrapper(
             "vertexai.generative_models",
             "GenerativeModel.generate_content",
             _wrap_generate_content,
         )
         
-        # Patch async version
+        # Patch public async version
         wrapt.wrap_function_wrapper(
             "vertexai.generative_models",
             "GenerativeModel.generate_content_async",
             _wrap_generate_content_async,
         )
+        
+        # Patch private _generate_content (called by ChatSession.send_message)
+        # This is needed for AutoGen which uses ChatSession.send_message()
+        _gm_module = safe_import("vertexai.generative_models._generative_models")
+        if _gm_module is not None:
+            try:
+                wrapt.wrap_function_wrapper(
+                    "vertexai.generative_models._generative_models",
+                    "GenerativeModel._generate_content",
+                    _wrap_private_generate_content,
+                )
+                logger.debug("Patched GenerativeModel._generate_content (private)")
+            except Exception as e:
+                logger.debug(f"Could not patch _generate_content: {e}")
+            
+            try:
+                wrapt.wrap_function_wrapper(
+                    "vertexai.generative_models._generative_models",
+                    "GenerativeModel._generate_content_async",
+                    _wrap_private_generate_content_async,
+                )
+                logger.debug("Patched GenerativeModel._generate_content_async (private)")
+            except Exception as e:
+                logger.debug(f"Could not patch _generate_content_async: {e}")
         
         mark_patched("vertexai")
         logger.info("VertexAI patched successfully")

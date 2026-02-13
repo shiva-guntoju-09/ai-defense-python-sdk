@@ -31,7 +31,7 @@ class TestProtectIntegration:
              patch("aidefense.runtime.agentsec.patchers.patch_vertexai") as mock_vertexai, \
              patch("aidefense.runtime.agentsec.patchers.patch_mcp") as mock_mcp:
             
-            protect(api_mode_llm="enforce", patch_clients=True)
+            protect(api_mode={"llm": {"mode": "enforce"}}, patch_clients=True)
             
             mock_openai.assert_called_once()
             mock_bedrock.assert_called_once()
@@ -43,7 +43,7 @@ class TestProtectIntegration:
         with patch("aidefense.runtime.agentsec.patchers.patch_openai") as mock_openai, \
              patch("aidefense.runtime.agentsec.patchers.patch_bedrock") as mock_bedrock:
             
-            protect(api_mode_llm="enforce", patch_clients=False)
+            protect(api_mode={"llm": {"mode": "enforce"}}, patch_clients=False)
             
             mock_openai.assert_not_called()
             mock_bedrock.assert_not_called()
@@ -52,7 +52,7 @@ class TestProtectIntegration:
         """Test get_patched_clients() returns correct list after protect()."""
         from aidefense.runtime.agentsec.patchers import mark_patched
         
-        protect(api_mode_llm="enforce", patch_clients=False)
+        protect(api_mode={"llm": {"mode": "enforce"}}, patch_clients=False)
         
         # Manually mark some as patched
         mark_patched("openai")
@@ -66,34 +66,39 @@ class TestProtectIntegration:
 class TestProtectModes:
     """Test protect() with different modes."""
 
-    def test_protect_off_mode_skips_all(self):
-        """Test all modes='off' skips patching."""
-        with patch("aidefense.runtime.agentsec._apply_patches") as mock_patches:
+    def test_protect_off_mode_skips_patching(self):
+        """Test all modes='off' skips patching LLM/MCP clients."""
+        with patch("aidefense.runtime.agentsec.patchers.patch_openai") as mock_openai, \
+             patch("aidefense.runtime.agentsec.patchers.patch_bedrock") as mock_bedrock, \
+             patch("aidefense.runtime.agentsec.patchers.patch_mcp") as mock_mcp:
             
-            protect(api_mode_llm="off", api_mode_mcp="off")
+            protect(api_mode={"llm": {"mode": "off"}, "mcp": {"mode": "off"}})
             
-            mock_patches.assert_not_called()
+            # When both are "off" and integration is "api", no patches are applied
+            mock_openai.assert_not_called()
+            mock_bedrock.assert_not_called()
+            mock_mcp.assert_not_called()
 
     def test_protect_monitor_mode_enables_all(self):
-        """Test api_mode_llm='monitor' enables patching."""
+        """Test api_mode.llm.mode='monitor' enables patching."""
         with patch("aidefense.runtime.agentsec.patchers.patch_openai"), \
              patch("aidefense.runtime.agentsec.patchers.patch_bedrock"), \
              patch("aidefense.runtime.agentsec.patchers.patch_vertexai"), \
              patch("aidefense.runtime.agentsec.patchers.patch_mcp"):
             
-            protect(api_mode_llm="monitor")
+            protect(api_mode={"llm": {"mode": "monitor"}})
             
             from aidefense.runtime.agentsec._state import get_llm_mode
             assert get_llm_mode() == "monitor"
 
     def test_protect_enforce_mode_enables_all(self):
-        """Test api_mode_llm='enforce' enables patching."""
+        """Test api_mode.llm.mode='enforce' enables patching."""
         with patch("aidefense.runtime.agentsec.patchers.patch_openai"), \
              patch("aidefense.runtime.agentsec.patchers.patch_bedrock"), \
              patch("aidefense.runtime.agentsec.patchers.patch_vertexai"), \
              patch("aidefense.runtime.agentsec.patchers.patch_mcp"):
             
-            protect(api_mode_llm="enforce")
+            protect(api_mode={"llm": {"mode": "enforce"}})
             
             from aidefense.runtime.agentsec._state import get_llm_mode
             assert get_llm_mode() == "enforce"
@@ -104,7 +109,7 @@ class TestProtectModes:
              patch("aidefense.runtime.agentsec.patchers.patch_bedrock"), \
              patch("aidefense.runtime.agentsec.patchers.patch_vertexai"):
             
-            protect(api_mode_llm="enforce", api_mode_mcp="monitor")
+            protect(api_mode={"llm": {"mode": "enforce"}, "mcp": {"mode": "monitor"}})
             
             from aidefense.runtime.agentsec._state import get_llm_mode, get_mcp_mode
             assert get_llm_mode() == "enforce"

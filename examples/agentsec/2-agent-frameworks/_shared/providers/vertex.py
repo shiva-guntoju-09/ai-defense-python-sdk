@@ -148,16 +148,24 @@ class VertexAIProvider(BaseLLMProvider):
     # Framework adapters
     
     def get_langchain_llm(self) -> Any:
-        """Return LangChain-compatible ChatVertexAI model."""
-        from langchain_google_vertexai import ChatVertexAI
+        """Return LangChain-compatible Google Generative AI model.
+        
+        Uses ChatGoogleGenerativeAI with vertexai=True, which internally
+        uses the google.genai.Client (patched by agentsec) instead of the
+        deprecated ChatVertexAI that uses GAPIC PredictionServiceClient
+        (not interceptable by agentsec patchers).
+        """
+        from langchain_google_genai import ChatGoogleGenerativeAI
         
         if not self._authenticated:
             self.authenticate()
         
-        return ChatVertexAI(
-            model_name=self.model_id,
+        return ChatGoogleGenerativeAI(
+            model=self.model_id,
+            vertexai=True,
             project=self.project_id,
             location=self.location,
+            credentials=self._credentials,
             temperature=self.temperature,
             max_output_tokens=self.max_tokens,
         )

@@ -135,8 +135,7 @@ class TestCoherePatcherInspection:
         _state.set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_fail_open_llm=True,
-            api_mode_llm="monitor",
+            api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "monitor"}},
         )
         clear_inspection_context()
 
@@ -166,8 +165,7 @@ class TestCoherePatcherInspection:
         _state.set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_fail_open_llm=True,
-            api_mode_llm="enforce",
+            api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "enforce"}},
         )
         clear_inspection_context()
 
@@ -185,21 +183,21 @@ class TestCoherePatcherInspection:
 class TestCohereGatewayMode:
     """Test gateway mode behavior (parity with OpenAI/Bedrock)."""
 
-    def test_should_use_gateway_returns_false_when_off(self):
-        """_should_use_gateway returns False when integration mode is not gateway."""
-        from aidefense.runtime.agentsec.patchers.cohere import _should_use_gateway
+    def test_resolve_gateway_returns_none_when_api_mode(self):
+        """resolve_gateway_settings returns None when integration mode is not gateway."""
+        from aidefense.runtime.agentsec.patchers._base import resolve_gateway_settings
         _state.set_state(initialized=True, llm_integration_mode="api")
-        assert _should_use_gateway() is False
+        assert resolve_gateway_settings("cohere") is None
 
-    def test_should_use_gateway_returns_false_when_not_configured(self):
-        """_should_use_gateway returns False when Cohere gateway URL/key not set."""
-        from aidefense.runtime.agentsec.patchers.cohere import _should_use_gateway
-        _state.set_state(initialized=True, llm_integration_mode="gateway")
-        with patch("aidefense.runtime.agentsec.patchers.cohere._state.get_provider_gateway_url", return_value=None):
-            assert _should_use_gateway() is False
-        with patch("aidefense.runtime.agentsec.patchers.cohere._state.get_provider_gateway_url", return_value="https://g"):
-            with patch("aidefense.runtime.agentsec.patchers.cohere._state.get_provider_gateway_api_key", return_value=None):
-                assert _should_use_gateway() is False
+    def test_resolve_gateway_returns_none_when_not_configured(self):
+        """resolve_gateway_settings returns None when Cohere provider not configured."""
+        from aidefense.runtime.agentsec.patchers._base import resolve_gateway_settings
+        _state.set_state(
+            initialized=True,
+            llm_integration_mode="gateway",
+            gateway_mode={},
+        )
+        assert resolve_gateway_settings("cohere") is None
 
 
 class TestCoherePatchApply:

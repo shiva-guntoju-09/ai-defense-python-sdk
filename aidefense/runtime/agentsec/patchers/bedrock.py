@@ -20,7 +20,7 @@ Gateway Mode Support:
 - Bedrock: Uses Bearer token authentication with API key
 - AgentCore: Uses AWS Signature V4 authentication (no separate API key needed)
 
-When AGENTSEC_LLM_INTEGRATION_MODE=gateway, calls are routed to the provider-specific
+When llm_integration_mode=gateway, calls are routed to the provider-specific
 AI Defense Gateway in native format.
 
 Note: This satisfies roadmap item 21 (AWS Bedrock Client Autopatch) as the
@@ -41,7 +41,7 @@ from ..decision import Decision
 from ..exceptions import SecurityPolicyError
 from ..inspectors.api_llm import LLMInspector
 from . import is_patched, mark_patched
-from ._base import safe_import
+from ._base import safe_import, resolve_gateway_settings
 
 logger = logging.getLogger("aidefense.runtime.agentsec.patchers.bedrock")
 
@@ -152,31 +152,13 @@ def _get_inspector() -> LLMInspector:
                 if not _state.is_initialized():
                     logger.warning("agentsec.protect() not called, using default config")
                 _inspector = LLMInspector(
-                    fail_open=_state.get_api_mode_fail_open_llm(),
+                    fail_open=_state.get_api_llm_fail_open(),
                     default_rules=_state.get_llm_rules(),
                 )
                 # Register for cleanup on shutdown
                 from ..inspectors import register_inspector_for_cleanup
                 register_inspector_for_cleanup(_inspector)
     return _inspector
-
-
-def _is_gateway_mode() -> bool:
-    """Check if LLM integration mode is 'gateway'."""
-    return _state.get_llm_integration_mode() == "gateway"
-
-
-def _should_use_gateway() -> bool:
-    """Check if we should use gateway mode for Bedrock (gateway mode enabled, configured, and not skipped)."""
-    from .._context import is_llm_skip_active
-    if is_llm_skip_active():
-        return False
-    if not _is_gateway_mode():
-        return False
-    # Check if Bedrock gateway is properly configured
-    gateway_url = _state.get_provider_gateway_url("bedrock")
-    gateway_api_key = _state.get_provider_gateway_api_key("bedrock")
-    return bool(gateway_url and gateway_api_key)
 
 
 # =============================================================================
@@ -342,31 +324,31 @@ def _parse_agentcore_response(response_payload) -> str:
     return ""
 
 
-def _handle_agentcore_gateway_call(operation_name: str, api_params: Dict, instance) -> Dict:
+def _handle_agentcore_gateway_call(operation_name: str, api_params: Dict, instance, gw_settings) -> Dict:
     """
     Handle AgentCore call via AI Defense Gateway with AWS Signature V4 authentication.
     
     Sends the request to the AI Defense Gateway, which proxies to AgentCore.
-    Uses the Bedrock gateway URL with AWS Sig V4 authentication.
+    Uses the Bedrock gateway URL with AWS Sig V4 authentication (when auth_mode=aws_sigv4)
+    or Bearer token (when auth_mode=api_key).
     
     Args:
         operation_name: AgentCore operation name (InvokeAgentRuntime)
         api_params: AgentCore API parameters
         instance: The boto client instance (used for session/credentials)
+        gw_settings: Resolved gateway settings
         
     Returns:
         AgentCore-format response dict
     """
     import httpx
     
-    # Use Bedrock gateway URL for AgentCore operations
-    gateway_url = _state.get_provider_gateway_url("bedrock")
-    
+    gateway_url = gw_settings.url
     if not gateway_url:
         logger.warning("Gateway mode enabled but Bedrock gateway not configured")
         raise SecurityPolicyError(
             Decision.block(reasons=["Bedrock gateway not configured"]),
-            "Gateway mode enabled but AGENTSEC_BEDROCK_GATEWAY_URL not set"
+            "Gateway mode enabled but Bedrock gateway not configured (check gateway_mode.llm_gateways for a bedrock provider entry in config)"
         )
     
     agent_runtime_arn = api_params.get("agentRuntimeArn", "")
@@ -377,15 +359,10 @@ def _handle_agentcore_gateway_call(operation_name: str, api_params: Dict, instan
     if isinstance(payload, bytes):
         payload = payload.decode('utf-8')
     
-    logger.debug(f"[GATEWAY] Sending AgentCore request to gateway with AWS Sig V4")
+    logger.debug(f"[GATEWAY] Sending AgentCore request to gateway")
     logger.debug(f"[GATEWAY] Operation: {operation_name}, AgentRuntime: {agent_runtime_arn}")
     
     try:
-        # Import boto3 for AWS Sig V4 signing
-        import boto3
-        from botocore.auth import SigV4Auth
-        from botocore.awsrequest import AWSRequest
-        
         # Build request body
         try:
             request_body = json.loads(payload) if payload else {}
@@ -398,44 +375,60 @@ def _handle_agentcore_gateway_call(operation_name: str, api_params: Dict, instan
             request_body["runtimeSessionId"] = session_id
         
         body_bytes = json.dumps(request_body).encode('utf-8')
-        
-        # Get AWS credentials from boto3 session
-        session = boto3.Session()
-        credentials = session.get_credentials()
-        region = session.region_name or "us-east-1"
-        
-        if credentials is None:
-            logger.error("[GATEWAY] No AWS credentials available for Sig V4 signing")
-            raise SecurityPolicyError(
-                Decision.block(reasons=["AWS credentials not available"]),
-                "AWS credentials required for AgentCore gateway authentication"
-            )
-        
-        # Create AWS request for signing
         headers = {
             "Content-Type": "application/json",
             "X-AgentCore-Operation": operation_name,
         }
         
-        aws_request = AWSRequest(
-            method="POST",
-            url=gateway_url,
-            data=body_bytes,
-            headers=headers,
-        )
-        
-        # Sign the request with AWS Sig V4
-        SigV4Auth(credentials, "bedrock", region).add_auth(aws_request)
-        
-        # Send signed request
-        with httpx.Client(timeout=60.0) as client:
-            response = client.post(
-                gateway_url,
-                content=body_bytes,
-                headers=dict(aws_request.headers),
+        if gw_settings.auth_mode == "aws_sigv4":
+            # AWS Sig V4 authentication
+            import boto3
+            from botocore.auth import SigV4Auth
+            from botocore.awsrequest import AWSRequest
+            
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            region = session.region_name or "us-east-1"
+            if credentials is None:
+                logger.error("[GATEWAY] No AWS credentials available for Sig V4 signing")
+                raise SecurityPolicyError(
+                    Decision.block(reasons=["AWS credentials not available"]),
+                    "AWS credentials required for AgentCore gateway authentication"
+                )
+            aws_request = AWSRequest(
+                method="POST",
+                url=gateway_url,
+                data=body_bytes,
+                headers=headers,
             )
-            response.raise_for_status()
-            response_data = response.json()
+            SigV4Auth(credentials, "bedrock", region).add_auth(aws_request)
+            with httpx.Client(timeout=float(gw_settings.timeout)) as client:
+                response = client.post(
+                    gateway_url,
+                    content=body_bytes,
+                    headers=dict(aws_request.headers),
+                )
+                response.raise_for_status()
+                response_data = response.json()
+        else:
+            # api_key (default): Bearer token
+            if not gw_settings.api_key:
+                raise SecurityPolicyError(
+                    Decision.block(reasons=["Gateway API key not configured"]),
+                    "AgentCore gateway requires api_key when auth_mode=api_key"
+                )
+            auth_headers = {
+                **headers,
+                "Authorization": f"Bearer {gw_settings.api_key}",
+            }
+            with httpx.Client(timeout=float(gw_settings.timeout)) as client:
+                response = client.post(
+                    gateway_url,
+                    content=body_bytes,
+                    headers=auth_headers,
+                )
+                response.raise_for_status()
+                response_data = response.json()
         
         logger.debug(f"[GATEWAY] Received AgentCore response from gateway")
         set_inspection_context(decision=Decision.allow(reasons=["Gateway handled inspection"]), done=True)
@@ -444,7 +437,7 @@ def _handle_agentcore_gateway_call(operation_name: str, api_params: Dict, instan
         
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             # fail_open=True: allow request to proceed by re-raising original error
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original HTTP error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
@@ -463,7 +456,7 @@ def _handle_agentcore_gateway_call(operation_name: str, api_params: Dict, instan
         )
     except Exception as e:
         logger.error(f"[GATEWAY] Error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise  # Re-raise original error
@@ -769,7 +762,7 @@ def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision
     Returns:
         Decision.allow() if fail_open=True, raises SecurityPolicyError otherwise
     """
-    fail_open = _state.get_api_mode_fail_open_llm()
+    fail_open = _state.get_api_llm_fail_open()
     
     error_type = type(error).__name__
     logger.warning(f"[{operation}] Inspection error: {error_type}: {error}")
@@ -783,33 +776,48 @@ def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision
         raise SecurityPolicyError(decision, f"Inspection failed and fail_open=False: {error}")
 
 
-def _handle_bedrock_gateway_call(operation_name: str, api_params: Dict) -> Dict:
+def _handle_bedrock_gateway_call(operation_name: str, api_params: Dict, gw_settings) -> Dict:
     """
     Handle Bedrock call via AI Defense Gateway with native format.
     
     Sends native Bedrock request directly to the provider-specific gateway.
     The gateway handles the request in native Bedrock format - no conversion needed.
+    Uses Bearer token when auth_mode=api_key (default), or AWS SigV4 when auth_mode=aws_sigv4.
     
     Args:
         operation_name: Bedrock operation name (Converse, InvokeModel, etc.)
         api_params: Bedrock API parameters
+        gw_settings: Resolved gateway settings
         
     Returns:
         Bedrock-format response dict (native from gateway)
     """
     import httpx
     
-    gateway_url = _state.get_provider_gateway_url("bedrock")
-    gateway_api_key = _state.get_provider_gateway_api_key("bedrock")
-    
-    if not gateway_url or not gateway_api_key:
+    gateway_url = gw_settings.url
+    if not gateway_url:
         logger.warning("Gateway mode enabled but Bedrock gateway not configured")
         raise SecurityPolicyError(
             Decision.block(reasons=["Bedrock gateway not configured"]),
-            "Gateway mode enabled but AGENTSEC_BEDROCK_GATEWAY_URL not set"
+            "Gateway mode enabled but Bedrock gateway not configured (check gateway_mode.llm_gateways for a bedrock provider entry in config)"
+        )
+    if gw_settings.auth_mode != "aws_sigv4" and not gw_settings.api_key:
+        logger.warning("Gateway mode enabled but Bedrock gateway API key not configured")
+        raise SecurityPolicyError(
+            Decision.block(reasons=["Bedrock gateway not configured"]),
+            "Gateway mode enabled but Bedrock gateway API key not configured (check gateway_mode.llm_gateways for a bedrock provider entry in config)"
         )
     
     model_id = api_params.get("modelId", "")
+    
+    # Map Bedrock operation names to REST API URL paths
+    operation_path_map = {
+        "Converse": "converse",
+        "ConverseStream": "converse-stream",
+        "InvokeModel": "invoke",
+        "InvokeModelWithResponseStream": "invoke-with-response-stream",
+    }
+    operation_path = operation_path_map.get(operation_name, operation_name.lower())
     
     # Send native Bedrock request to gateway
     logger.debug(f"[GATEWAY] Sending native Bedrock request to gateway")
@@ -817,9 +825,9 @@ def _handle_bedrock_gateway_call(operation_name: str, api_params: Dict) -> Dict:
     
     try:
         # Build request body based on operation type
+        # Note: modelId goes in the URL path, NOT in the request body
         if operation_name in {"Converse", "ConverseStream"}:
             request_body = {
-                "modelId": model_id,
                 "messages": api_params.get("messages", []),
             }
             if api_params.get("system"):
@@ -834,30 +842,99 @@ def _handle_bedrock_gateway_call(operation_name: str, api_params: Dict) -> Dict:
             if isinstance(body, bytes):
                 body = body.decode("utf-8")
             request_body = json.loads(body) if isinstance(body, str) else body
-            request_body["modelId"] = model_id
         
-        # Send to gateway with native format
-        with httpx.Client(timeout=60.0) as client:
-            response = client.post(
-                gateway_url,
-                json=request_body,
-                headers={
-                    "Authorization": f"Bearer {gateway_api_key}",
-                    "Content-Type": "application/json",
-                    "X-Bedrock-Operation": operation_name,
-                },
+        # Build full gateway URL: {gateway_url}/model/{modelId}/{operation-path}
+        full_gateway_url = f"{gateway_url}/model/{model_id}/{operation_path}"
+        
+        # Send to gateway with native format - auth based on gw_settings.auth_mode
+        if gw_settings.auth_mode == "aws_sigv4":
+            import boto3
+            from botocore.auth import SigV4Auth
+            from botocore.awsrequest import AWSRequest
+            
+            body_bytes = json.dumps(request_body).encode('utf-8')
+            session = boto3.Session()
+            credentials = session.get_credentials()
+            region = session.region_name or "us-east-1"
+            if credentials is None:
+                logger.error("[GATEWAY] No AWS credentials available for Sig V4 signing")
+                raise SecurityPolicyError(
+                    Decision.block(reasons=["AWS credentials not available"]),
+                    "AWS credentials required for Bedrock gateway (auth_mode=aws_sigv4)"
+                )
+            headers = {
+                "Content-Type": "application/json",
+                "x-amzn-bedrock-accept-type": "application/json",
+            }
+            # Sign against the REAL Bedrock endpoint (the gateway forwards
+            # the signature to AWS, which validates against the real host)
+            bedrock_sign_url = f"https://bedrock-runtime.{region}.amazonaws.com/model/{model_id}/{operation_path}"
+            aws_request = AWSRequest(
+                method="POST",
+                url=bedrock_sign_url,
+                data=body_bytes,
+                headers=headers,
             )
-            response.raise_for_status()
-            response_data = response.json()
+            SigV4Auth(credentials, "bedrock", region).add_auth(aws_request)
+            signed_headers = dict(aws_request.headers)
+            logger.debug(f"[GATEWAY] SigV4 signed for: {bedrock_sign_url}")
+            logger.debug(f"[GATEWAY] Sending to gateway: {full_gateway_url}")
+            with httpx.Client(timeout=float(gw_settings.timeout)) as client:
+                response = client.post(
+                    full_gateway_url,
+                    content=body_bytes,
+                    headers=signed_headers,
+                )
+                response.raise_for_status()
+                response_data = response.json()
+        else:
+            # api_key (default): Bearer token
+            with httpx.Client(timeout=float(gw_settings.timeout)) as client:
+                response = client.post(
+                    full_gateway_url,
+                    json=request_body,
+                    headers={
+                        "Authorization": f"Bearer {gw_settings.api_key}",
+                        "Content-Type": "application/json",
+                        "x-amzn-bedrock-accept-type": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                response_data = response.json()
         
         logger.debug(f"[GATEWAY] Received native Bedrock response from gateway")
         set_inspection_context(decision=Decision.allow(reasons=["Gateway handled inspection"]), done=True)
+        
+        # Ensure ResponseMetadata is present (boto3 always includes it)
+        if "ResponseMetadata" not in response_data:
+            response_data["ResponseMetadata"] = {
+                "RequestId": "gateway-handled",
+                "HTTPStatusCode": 200,
+                "HTTPHeaders": {},
+                "RetryAttempts": 0,
+            }
+        
+        # For InvokeModel operations, wrap response in boto3 format
+        # boto3 InvokeModel returns {"body": <StreamingBody>, "contentType": ..., "ResponseMetadata": ...}
+        # but Converse returns a plain dict which is already the correct format
+        if operation_name in {"InvokeModel", "InvokeModelWithResponseStream"}:
+            wrapped_response = {
+                "body": _StreamingBodyWrapper(json.dumps(response_data).encode("utf-8")),
+                "contentType": "application/json",
+                "ResponseMetadata": response_data["ResponseMetadata"],
+            }
+            return wrapped_response
         
         return response_data
         
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        # Log the response body for debugging 400/4xx errors
+        try:
+            logger.error(f"[GATEWAY] Response body: {e.response.text}")
+        except Exception:
+            pass
+        if gw_settings.fail_open:
             # fail_open=True: allow request to proceed by re-raising original error
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original HTTP error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
@@ -870,14 +947,14 @@ def _handle_bedrock_gateway_call(operation_name: str, api_params: Dict) -> Dict:
             )
     except Exception as e:
         logger.error(f"[GATEWAY] Error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise  # Re-raise original error
         raise
 
 
-def _handle_bedrock_gateway_call_streaming(operation_name: str, api_params: Dict):
+def _handle_bedrock_gateway_call_streaming(operation_name: str, api_params: Dict, gw_settings):
     """
     Handle Bedrock streaming call via AI Defense Gateway with native format.
     
@@ -886,12 +963,13 @@ def _handle_bedrock_gateway_call_streaming(operation_name: str, api_params: Dict
     Args:
         operation_name: Bedrock operation name (ConverseStream, InvokeModelWithResponseStream)
         api_params: Bedrock API parameters
+        gw_settings: Resolved gateway settings
         
     Returns:
         Dict with 'stream' key containing event wrapper
     """
     # Use non-streaming gateway call and wrap result for streaming compatibility
-    bedrock_response = _handle_bedrock_gateway_call(operation_name.replace("Stream", ""), api_params)
+    bedrock_response = _handle_bedrock_gateway_call(operation_name.replace("Stream", ""), api_params, gw_settings)
     
     # Wrap the response in a streaming-like format
     return {"stream": _BedrockFakeStreamWrapper(bedrock_response)}
@@ -1064,9 +1142,10 @@ def _handle_agentcore_call(wrapped, instance, args, kwargs, operation_name: str,
         return wrapped(*args, **kwargs)
     
     # Gateway mode: route through AI Defense Gateway (uses Bedrock gateway config)
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("bedrock")
+    if gw_settings:
         logger.debug(f"[PATCHED CALL] AgentCore.{operation_name} - Gateway mode - routing to AI Defense Gateway")
-        return _handle_agentcore_gateway_call(operation_name, api_params, instance)
+        return _handle_agentcore_gateway_call(operation_name, api_params, instance, gw_settings)
     
     # API mode: use LLMInspector for inspection
     return _handle_agentcore_api_mode(operation_name, api_params, wrapped, args, kwargs)
@@ -1126,16 +1205,17 @@ def _wrap_make_api_call(wrapped, instance, args, kwargs):
     logger.debug(f"╚══════════════════════════════════════════════════════════════")
     
     # Gateway mode: route through AI Defense Gateway with format conversion
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("bedrock")
+    if gw_settings:
         logger.debug(f"[PATCHED CALL] Bedrock.{operation_name} - Gateway mode - routing to AI Defense Gateway")
         if operation_name == "Converse":
-            return _handle_bedrock_gateway_call(operation_name, api_params)
+            return _handle_bedrock_gateway_call(operation_name, api_params, gw_settings)
         elif operation_name == "ConverseStream":
-            return _handle_bedrock_gateway_call_streaming(operation_name, api_params)
+            return _handle_bedrock_gateway_call_streaming(operation_name, api_params, gw_settings)
         elif operation_name == "InvokeModel":
-            return _handle_bedrock_gateway_call(operation_name, api_params)
+            return _handle_bedrock_gateway_call(operation_name, api_params, gw_settings)
         elif operation_name == "InvokeModelWithResponseStream":
-            return _handle_bedrock_gateway_call_streaming(operation_name, api_params)
+            return _handle_bedrock_gateway_call_streaming(operation_name, api_params, gw_settings)
         else:
             logger.error(f"[PATCHED CALL] Unknown Bedrock operation in gateway mode: {operation_name}")
             raise SecurityPolicyError(

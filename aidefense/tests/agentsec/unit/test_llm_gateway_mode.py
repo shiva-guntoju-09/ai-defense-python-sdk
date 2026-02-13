@@ -5,9 +5,10 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import os
 
 from aidefense.runtime import agentsec
-from aidefense.runtime.agentsec._state import reset, set_state, get_llm_integration_mode
+from aidefense.runtime.agentsec._state import reset, set_state, get_llm_integration_mode, get_default_gateway_for_provider
 from aidefense.runtime.agentsec._context import clear_inspection_context
 from aidefense.runtime.agentsec.patchers import reset_registry
+from aidefense.runtime.agentsec.patchers._base import resolve_gateway_settings
 from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
 
 # Import the module itself for patching
@@ -43,63 +44,54 @@ class TestIntegrationModeDetection:
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="api",
             mcp_integration_mode="api",
         )
         
-        assert openai_patcher._is_gateway_mode() is False
         assert get_llm_integration_mode() == "api"
+        assert resolve_gateway_settings("openai") is None
 
     def test_is_gateway_mode_when_gateway(self):
         """Test integration mode is 'gateway' when configured."""
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="gateway",
             mcp_integration_mode="api",
         )
         
-        assert openai_patcher._is_gateway_mode() is True
         assert get_llm_integration_mode() == "gateway"
 
     def test_should_use_gateway_requires_config(self):
         """Test gateway mode requires URL and API key to be configured."""
-        # Gateway mode but no URL/key configured
+        # Gateway mode but no provider config (no default gateway for openai)
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="gateway",
             mcp_integration_mode="api",
-            provider_gateway_config={
-                "openai": {"url": None, "api_key": None},
-            },
+            gateway_mode={"llm_gateways": {}},
         )
         
-        assert openai_patcher._is_gateway_mode() is True
-        assert openai_patcher._should_use_gateway() is False  # Not configured
+        assert get_llm_integration_mode() == "gateway"
+        assert resolve_gateway_settings("openai") is None  # Not configured
 
     def test_should_use_gateway_with_config(self):
         """Test gateway mode works when fully configured."""
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="gateway",
             mcp_integration_mode="api",
-            provider_gateway_config={
-                "openai": {"url": "https://gateway.example.com/openai", "api_key": "test-key"},
-            },
+            gateway_mode={"llm_gateways": {"openai-default": {"gateway_url": "https://gateway.example.com/openai", "gateway_api_key": "test-key", "provider": "openai", "default": True}}},
         )
         
-        assert openai_patcher._is_gateway_mode() is True
-        assert openai_patcher._should_use_gateway() is True
+        assert get_llm_integration_mode() == "gateway"
+        assert resolve_gateway_settings("openai") is not None
 
 
 class TestProviderGatewayConfig:
@@ -107,36 +99,31 @@ class TestProviderGatewayConfig:
 
     def test_provider_gateway_config_openai(self):
         """Test OpenAI provider gateway config retrieval."""
-        from aidefense.runtime.agentsec._state import get_provider_gateway_url, get_provider_gateway_api_key
-        
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="gateway",
-            provider_gateway_config={
-                "openai": {"url": "https://gateway.example.com/openai", "api_key": "openai-key"},
-            },
+            gateway_mode={"llm_gateways": {"openai-default": {"gateway_url": "https://gateway.example.com/openai", "gateway_api_key": "openai-key", "provider": "openai", "default": True}}},
         )
         
-        assert get_provider_gateway_url("openai") == "https://gateway.example.com/openai"
-        assert get_provider_gateway_api_key("openai") == "openai-key"
+        gateway = get_default_gateway_for_provider("openai")
+        assert gateway is not None
+        assert gateway.get("gateway_url") == "https://gateway.example.com/openai"
+        assert gateway.get("gateway_api_key") == "openai-key"
 
     def test_provider_gateway_config_not_set(self):
         """Test provider gateway config returns None when not set."""
-        from aidefense.runtime.agentsec._state import get_provider_gateway_url, get_provider_gateway_api_key
-        
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="gateway",
         )
         
-        assert get_provider_gateway_url("openai") is None
-        assert get_provider_gateway_api_key("openai") is None
+        gateway = get_default_gateway_for_provider("openai")
+        assert (gateway or {}).get("gateway_url") is None
+        assert (gateway or {}).get("gateway_api_key") is None
 
 
 class TestDictToOpenAIResponse:
@@ -185,8 +172,7 @@ class TestOpenAIPatcherGatewayMode:
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="api",
         )
         
@@ -216,12 +202,9 @@ class TestOpenAIPatcherGatewayMode:
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="gateway",
-            provider_gateway_config={
-                "openai": {"url": "https://gateway.example.com/openai", "api_key": "test-key"},
-            },
+            gateway_mode={"llm_gateways": {"openai-default": {"gateway_url": "https://gateway.example.com/openai", "gateway_api_key": "test-key", "provider": "openai", "default": True}}},
         )
         
         # Mock the inspector (should NOT be called)
@@ -255,19 +238,16 @@ class TestOpenAIPatcherGatewayMode:
                 assert not wrapped.called
 
     def test_gateway_mode_fallback_when_not_configured(self):
-        """Test gateway mode raises error when gateway not configured."""
+        """Test gateway mode falls back to API mode when gateway not configured."""
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="gateway",
-            provider_gateway_config={
-                "openai": {"url": None, "api_key": None},  # Not configured
-            },
+            gateway_mode={"llm_gateways": {}},  # Not configured - no openai provider
         )
         
-        # Since gateway is not configured, _should_use_gateway() returns False
+        # Since gateway is not configured, resolve_gateway_settings returns None
         # and it will use API mode instead
         mock_inspector = MagicMock()
         mock_inspector.inspect_conversation.return_value = MagicMock(action="allow")
@@ -299,12 +279,9 @@ class TestOpenAIPatcherAsyncGatewayMode:
         set_state(
             initialized=True,
             llm_rules=None,
-            api_mode_llm="monitor",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}},
             llm_integration_mode="gateway",
-            provider_gateway_config={
-                "openai": {"url": "https://gateway.example.com/openai", "api_key": "test-key"},
-            },
+            gateway_mode={"llm_gateways": {"openai-default": {"gateway_url": "https://gateway.example.com/openai", "gateway_api_key": "test-key", "provider": "openai", "default": True}}},
         )
         
         # Mock httpx AsyncClient

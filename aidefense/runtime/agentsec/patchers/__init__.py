@@ -50,6 +50,7 @@ from .vertexai import patch_vertexai
 from .google_genai import patch_google_genai
 from .cohere import patch_cohere
 from .mistral import patch_mistral
+from .litellm import patch_litellm
 
 __all__ = [
     "is_patched",
@@ -63,6 +64,7 @@ __all__ = [
     "patch_google_genai",
     "patch_cohere",
     "patch_mistral",
+    "patch_litellm",
 ]
 
 

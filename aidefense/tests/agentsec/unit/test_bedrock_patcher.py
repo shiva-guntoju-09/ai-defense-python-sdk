@@ -47,15 +47,21 @@ class TestBedrockPatcher:
             assert _should_inspect() is True
 
     @patch("aidefense.runtime.agentsec.patchers.bedrock._state")
-    def test_is_gateway_mode(self, mock_state):
-        """Test _is_gateway_mode returns correct value."""
-        from aidefense.runtime.agentsec.patchers.bedrock import _is_gateway_mode
-        
-        mock_state.get_llm_integration_mode.return_value = "gateway"
-        assert _is_gateway_mode() is True
+    def test_integration_mode_affects_resolve_gateway(self, mock_state):
+        """Test resolve_gateway_settings returns None when integration mode is api."""
+        from aidefense.runtime.agentsec.patchers._base import resolve_gateway_settings
         
         mock_state.get_llm_integration_mode.return_value = "api"
-        assert _is_gateway_mode() is False
+        # When api mode, resolve_gateway_settings returns None regardless of providers
+        result = resolve_gateway_settings("bedrock")
+        assert result is None
+        
+        mock_state.get_llm_integration_mode.return_value = "gateway"
+        # When gateway mode but no default gateway for provider, returns None
+        mock_state.get_llm_gateway.return_value = None
+        mock_state.get_default_gateway_for_provider.return_value = None
+        result = resolve_gateway_settings("bedrock")
+        assert result is None
 
 
 class TestBedrockMessageParsing:
@@ -153,36 +159,44 @@ class TestBedrockInspection:
 class TestBedrockGatewayMode:
     """Test Bedrock gateway mode functionality."""
 
-    @patch("aidefense.runtime.agentsec.patchers.bedrock._state")
-    def test_should_use_gateway_checks_config(self, mock_state):
-        """Test _should_use_gateway checks both mode and credentials."""
-        from aidefense.runtime.agentsec.patchers.bedrock import _should_use_gateway
+    @patch("aidefense.runtime.agentsec.patchers._base._state")
+    def test_resolve_gateway_settings_checks_mode_and_provider(self, mock_state):
+        """Test resolve_gateway_settings returns GatewaySettings when gateway mode + provider configured."""
+        from aidefense.runtime.agentsec.patchers._base import resolve_gateway_settings
         
-        # Gateway mode but no credentials
-        mock_state.get_llm_integration_mode.return_value = "gateway"
-        mock_state.get_provider_gateway_url.return_value = None
-        mock_state.get_provider_gateway_api_key.return_value = None
-        assert _should_use_gateway() is False
-        
-        # Gateway mode with credentials
-        mock_state.get_provider_gateway_url.return_value = "https://gateway.example.com"
-        mock_state.get_provider_gateway_api_key.return_value = "test-key"
-        assert _should_use_gateway() is True
-        
-        # API mode
-        mock_state.get_llm_integration_mode.return_value = "api"
-        assert _should_use_gateway() is False
+        with patch("aidefense.runtime.agentsec.patchers._base.is_llm_skip_active", return_value=False):
+            with patch("aidefense.runtime.agentsec.patchers._base.get_active_gateway", return_value=None):
+                # Gateway mode with provider config
+                mock_state.get_llm_integration_mode.return_value = "gateway"
+                mock_state.get_default_gateway_for_provider.return_value = {
+                    "gateway_url": "https://gateway.example.com",
+                    "gateway_api_key": "test-key",
+                }
+                mock_state.resolve_llm_gateway_settings.side_effect = lambda cfg, **kw: MagicMock(
+                    url=cfg.get("gateway_url", ""),
+                    api_key=cfg.get("gateway_api_key"),
+                )
+                result = resolve_gateway_settings("bedrock")
+                assert result is not None
+                assert result.url == "https://gateway.example.com"
+                assert result.api_key == "test-key"
+                
+                # API mode returns None
+                mock_state.get_llm_integration_mode.return_value = "api"
+                result = resolve_gateway_settings("bedrock")
+                assert result is None
 
-    @patch("aidefense.runtime.agentsec.patchers.bedrock._state")
     @patch("httpx.Client")
-    def test_gateway_mode_sends_native_format(self, mock_httpx_client, mock_state):
+    def test_gateway_mode_sends_native_format(self, mock_httpx_client):
         """Test gateway mode sends native Bedrock request to gateway."""
         from aidefense.runtime.agentsec.patchers.bedrock import _handle_bedrock_gateway_call
+        from aidefense.runtime.agentsec.gateway_settings import GatewaySettings
         
-        mock_state.get_llm_mode.return_value = "monitor"
-        mock_state.get_provider_gateway_url.return_value = "https://gateway.example.com"
-        mock_state.get_provider_gateway_api_key.return_value = "test-key"
-        mock_state.get_gateway_mode_fail_open_llm.return_value = True
+        gw_settings = GatewaySettings(
+            url="https://gateway.example.com",
+            api_key="test-key",
+            fail_open=True,
+        )
         
         # Mock HTTP response
         mock_response = MagicMock()
@@ -196,13 +210,13 @@ class TestBedrockGatewayMode:
         mock_client_instance.post.return_value = mock_response
         mock_httpx_client.return_value = mock_client_instance
         
-        # Use actual function signature: operation_name and api_params
         result = _handle_bedrock_gateway_call(
             operation_name="Converse",
             api_params={
                 "modelId": "anthropic.claude-3-haiku-20240307-v1:0",
                 "messages": [{"role": "user", "content": [{"text": "test"}]}]
-            }
+            },
+            gw_settings=gw_settings,
         )
         
         # Verify HTTP call was made

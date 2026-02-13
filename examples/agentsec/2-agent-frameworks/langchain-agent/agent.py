@@ -51,19 +51,21 @@ if shared_env.exists():
 # MINIMAL agentsec integration: Just 2 lines!
 # =============================================================================
 from aidefense.runtime import agentsec
-agentsec.protect()  # Reads config from .env, patches clients
+config_path = str(Path(__file__).parent.parent.parent / "agentsec.yaml")
+# Allow integration test script to override YAML integration mode via env vars
+agentsec.protect(
+    config=config_path,
+    llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE"),
+    mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE"),
+)
 
 # That's it! Now import your frameworks normally
 #
-# Alternative: Configure Gateway mode programmatically (provider-specific):
-#   agentsec.protect(
-#       llm_integration_mode="gateway",
-#       providers={"openai": {"gateway_url": "https://gateway.../conn", "gateway_api_key": "key"}},
-#       auto_dotenv=False,
-#   )
+# Alternative: Configure inline (for quick testing):
+#   agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
 from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
 
-print(f"[agentsec] LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'monitor')} | Integration: {os.getenv('AGENTSEC_LLM_INTEGRATION_MODE', 'api')} | Patched: {agentsec.get_patched_clients()}")
+print(f"[agentsec] Patched: {agentsec.get_patched_clients()}")
 
 # =============================================================================
 # Import shared provider infrastructure
@@ -260,7 +262,8 @@ async def run_agent(initial_message: str = None):
     # -------------------------------------------------------------------------
     
     # Define tools (fetch_url if MCP connected, otherwise empty)
-    tools = [fetch_url] if _mcp_session else []
+    # Register tools if MCP URL is configured (tool calls create fresh connections)
+    tools = [fetch_url] if mcp_url else []
     tools_dict = {t.name: t for t in tools}
     
     logger.debug(f"Tools: {list(tools_dict.keys())}")
@@ -279,10 +282,14 @@ async def run_agent(initial_message: str = None):
     print("=" * 60, flush=True)
     
     # System message for the agent
-    system_message = SystemMessage(content="""You are a helpful assistant with access to tools.
-When asked to fetch a URL, use the fetch_url tool.
-After using a tool, summarize the results clearly for the user.
-Be concise but informative in your responses.""")
+    system_message = SystemMessage(content="""You are a helpful assistant with access to the fetch_url tool.
+
+CRITICAL INSTRUCTIONS:
+1. When the user asks to fetch a URL or asks about a webpage, ALWAYS use the fetch_url tool.
+2. NEVER guess what a page contains - always use the tool to get actual content.
+3. After fetching, summarize the results clearly for the user.
+
+Tool usage: fetch_url(url='https://example.com')""")
     
     # -------------------------------------------------------------------------
     # Handle single message mode

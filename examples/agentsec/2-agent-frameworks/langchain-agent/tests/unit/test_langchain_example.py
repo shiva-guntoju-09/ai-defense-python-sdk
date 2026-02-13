@@ -88,7 +88,7 @@ def test_agentsec_patches_bedrock(env_vars):
     """Test that agentsec.protect() patches Bedrock client."""
     from aidefense.runtime import agentsec
     
-    agentsec.protect(api_mode_llm="monitor")
+    agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
     patched_clients = agentsec.get_patched_clients()
     
     try:
@@ -102,7 +102,7 @@ def test_agentsec_patches_mcp_when_available(env_vars):
     """Test that agentsec.protect() patches MCP when available."""
     from aidefense.runtime import agentsec
     
-    agentsec.protect(api_mode_llm="monitor", api_mode_mcp="monitor")
+    agentsec.protect(api_mode={"llm": {"mode": "monitor"}, "mcp": {"mode": "monitor"}})
     patched_clients = agentsec.get_patched_clients()
     
     try:
@@ -116,19 +116,15 @@ def test_agentsec_patches_mcp_when_available(env_vars):
 # Test: Environment Loading
 # =============================================================================
 
-def test_environment_loading():
-    """Test that environment variables are properly loaded."""
-    os.environ["AI_DEFENSE_API_MODE_LLM_API_KEY"] = "custom-key-12345"
-    os.environ["AGENTSEC_API_MODE_LLM"] = "enforce"
-    os.environ["AGENTSEC_TENANT_ID"] = "test-tenant"
+def test_config_constants_available():
+    """Test that configuration constants are available."""
+    from aidefense.runtime.agentsec.config import VALID_MODES, VALID_INTEGRATION_MODES
     
-    from aidefense.runtime.agentsec.config import load_env_config
-    
-    env_config = load_env_config()
-    
-    assert env_config["llm_mode"] == "enforce"
-    assert env_config["api_key"] == "custom-key-12345"
-    assert env_config["tenant_id"] == "test-tenant"
+    assert "monitor" in VALID_MODES
+    assert "enforce" in VALID_MODES
+    assert "off" in VALID_MODES
+    assert "api" in VALID_INTEGRATION_MODES
+    assert "gateway" in VALID_INTEGRATION_MODES
 
 
 def test_default_values():
@@ -141,11 +137,11 @@ def test_default_values():
     
     # Reset state to test defaults
     _state.reset()
-    agentsec.protect(api_mode_llm="monitor")
+    agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
     
-    # Check default fail_open values
-    assert _state.get_api_mode_fail_open_llm() == True
-    assert _state.get_api_mode_fail_open_mcp() == True
+    # Check default fail_open values (api mode defaults to fail_open=False for LLM)
+    assert _state.get_api_llm_fail_open() == False
+    assert _state.get_api_mcp_fail_open() == True
 
 
 # =============================================================================
@@ -171,7 +167,7 @@ def test_security_policy_error_not_raised_in_monitor_mode(env_vars):
     from aidefense.runtime import agentsec
     from aidefense.runtime.agentsec import _state
     
-    agentsec.protect(api_mode_llm="monitor")
+    agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
     
     assert _state.get_llm_mode() == "monitor"
 
@@ -184,10 +180,10 @@ def test_protect_is_idempotent(env_vars):
     """Test that calling protect() multiple times is safe."""
     from aidefense.runtime import agentsec
     
-    agentsec.protect(api_mode_llm="monitor")
+    agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
     patched1 = set(agentsec.get_patched_clients())
     
-    agentsec.protect(api_mode_llm="monitor")
+    agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
     patched2 = set(agentsec.get_patched_clients())
     
     assert patched1 == patched2
@@ -198,7 +194,7 @@ def test_mode_off_skips_patching(env_vars):
     from aidefense.runtime import agentsec
     from aidefense.runtime.agentsec import _state
     
-    agentsec.protect(api_mode_llm="off", api_mode_mcp="off")
+    agentsec.protect(api_mode={"llm": {"mode": "off"}, "mcp": {"mode": "off"}})
     
     assert _state.get_llm_mode() == "off"
 
@@ -299,7 +295,7 @@ def test_llm_call_blocked_in_enforce_mode(env_vars):
     from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
     
     # Initialize in enforce mode
-    agentsec.protect(api_mode_llm="enforce")
+    agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
     
     # Create inspector and mock the API response
     inspector = LLMInspector(
@@ -336,7 +332,7 @@ def test_llm_call_blocked_logs_in_monitor_mode(env_vars):
     from aidefense.runtime.agentsec import _state
     
     # Initialize in monitor mode
-    agentsec.protect(api_mode_llm="monitor")
+    agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
     assert _state.get_llm_mode() == "monitor"
     
     inspector = LLMInspector(
@@ -369,7 +365,7 @@ def test_llm_call_allowed(env_vars):
     from aidefense.runtime import agentsec
     from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
     
-    agentsec.protect(api_mode_llm="enforce")
+    agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
     
     inspector = LLMInspector(
         endpoint="https://test.api",
@@ -393,7 +389,7 @@ def test_llm_call_allowed_with_system_prompt(env_vars):
     from aidefense.runtime import agentsec
     from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
     
-    agentsec.protect(api_mode_llm="enforce")
+    agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
     
     inspector = LLMInspector(
         endpoint="https://test.api",
@@ -428,7 +424,7 @@ def test_tool_call_blocked(env_vars):
     from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
     from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
     
-    agentsec.protect(api_mode_llm="enforce")
+    agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
     
     inspector = LLMInspector(
         endpoint="https://test.api",
@@ -470,7 +466,7 @@ def test_tool_response_blocked(env_vars):
     from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
     from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
     
-    agentsec.protect(api_mode_llm="enforce")
+    agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
     
     inspector = LLMInspector(
         endpoint="https://test.api",
@@ -508,7 +504,7 @@ def test_tool_response_sanitized(env_vars):
     from aidefense.runtime import agentsec
     from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
     
-    agentsec.protect(api_mode_llm="enforce")
+    agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
     
     inspector = LLMInspector(
         endpoint="https://test.api",
@@ -550,7 +546,7 @@ def test_full_flow_tool_and_llm_allowed(env_vars):
     from aidefense.runtime import agentsec
     from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
     
-    agentsec.protect(api_mode_llm="enforce")
+    agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
     
     inspector = LLMInspector(
         endpoint="https://test.api",
@@ -609,7 +605,7 @@ def test_api_error_fail_open_allows(env_vars):
     from aidefense.runtime import agentsec
     from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
     
-    agentsec.protect(api_mode_llm="enforce")
+    agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
     
     inspector = LLMInspector(
         endpoint="https://test.api",
@@ -634,7 +630,7 @@ def test_api_error_fail_closed_raises(env_vars):
     from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
     from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
     
-    agentsec.protect(api_mode_llm="enforce")
+    agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
     
     inspector = LLMInspector(
         endpoint="https://test.api",

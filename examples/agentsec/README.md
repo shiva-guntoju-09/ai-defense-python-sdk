@@ -8,23 +8,21 @@
 
 ### How It Works
 
-agentsec uses **dynamic code modification**  to automatically intercept LLM and MCP tool calls, routing traffic through:
+agentsec uses **dynamic code modification** to automatically intercept LLM and MCP tool calls, routing traffic through:
 
 | Integration Mode | Description |
 |------------------|-------------|
 | **Cisco AI Defense Gateway** | Routes all LLM traffic through a secure proxy for centralized policy enforcement |
 | **Cisco AI Defense API** | Inspects requests/responses via API calls while connecting directly to LLM providers |
 
-With just **few lines of code**, your existing AI application gains enterprise-grade security:
+With just **a few lines of code**, your existing AI application gains enterprise-grade security:
 
 ```python
 from aidefense.runtime import agentsec
-agentsec.protect()  
+agentsec.protect(config="agentsec.yaml")  
 ```
 
 ---
-
-Comprehensive examples demonstrating how to secure AI agents with **Cisco AI Defense** using the `aidefense.runtime.agentsec` module.
 
 ## Table of Contents
 
@@ -57,10 +55,13 @@ Comprehensive examples demonstrating how to secure AI agents with **Cisco AI Def
 
 ## Quick Start
 
+All paths below are relative to `examples/agentsec/`.
+
 ```bash
-# 1. Configure credentials
+# 1. Configure credentials and settings
 cp .env.example .env
-# Edit .env with your AI Defense API key and provider credentials
+# Edit .env with your API keys and provider credentials (secrets only)
+# Edit agentsec.yaml for integration modes, gateway URLs, and inspection settings
 
 # 2. Run a simple example
 cd 1-simple && poetry install && poetry run python basic_protection.py
@@ -68,8 +69,7 @@ cd 1-simple && poetry install && poetry run python basic_protection.py
 # 3. Or run an agent framework example
 cd 2-agent-frameworks/strands-agent && poetry install && ./scripts/run.sh --openai
 
-# 4. Run all tests from the repo root
-cd /path/to/ai-defense-python-sdk
+# 4. Run all tests (from the repo root: ai-defense-python-sdk/)
 ./scripts/run-unit-tests.sh           # ~1130 unit tests
 ./scripts/run-integration-tests.sh    # Full integration tests
 ```
@@ -78,43 +78,58 @@ cd /path/to/ai-defense-python-sdk
 
 ## Environment Variables Quick Reference
 
-The `.env.example` file contains all variables organized by which examples need them. Here's a quick reference:
+Configuration is split between two files:
 
-### Core (Required for All Examples)
+| File | Contains | Example |
+|------|----------|---------|
+| **`agentsec.yaml`** | Integration modes, gateway URLs, timeouts, inspection modes | `llm_integration_mode: gateway` |
+| **`.env`** | Secrets only (API keys, credentials) | `OPENAI_API_KEY=sk-...` |
 
-| Variable | Description |
-|----------|-------------|
-| `AGENTSEC_LLM_INTEGRATION_MODE` | `api` or `gateway` |
-| `AGENTSEC_LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+> **Tip**: `agentsec.yaml` can reference secrets from `.env` using `${VAR_NAME}` syntax.
+
+### Core `.env` Variables
+
+| Variable | Required | Description |
+|----------|:--------:|-------------|
+| `AI_DEFENSE_API_MODE_LLM_API_KEY` | Yes | AI Defense API key for LLM inspection |
+| `AI_DEFENSE_API_MODE_MCP_API_KEY` | For MCP | AI Defense API key for MCP inspection |
+
+> **Note**: Log level, endpoints, and inspection modes are configured in `agentsec.yaml` (not `.env`). Log level can optionally be overridden via the `AGENTSEC_LOG_LEVEL` environment variable.
 
 ### By Integration Mode
 
-| Mode | Required Variables |
-|------|-------------------|
-| **API Mode** | `AI_DEFENSE_API_MODE_LLM_ENDPOINT`, `AI_DEFENSE_API_MODE_LLM_API_KEY` |
-| **Gateway Mode** | Provider-specific gateway URL + key (see below) |
+| Mode | Secrets in `.env` | Settings in `agentsec.yaml` |
+|------|-------------------|----------------------------|
+| **API Mode** | `AI_DEFENSE_API_MODE_LLM_API_KEY` | `api_mode.llm.endpoint`, `api_mode.llm.mode` |
+| **Gateway Mode** | Provider-specific gateway API keys (see below) | `gateway_mode.llm_gateways.*` (URLs, providers) |
 
 ### By LLM Provider
 
-| Provider | API Mode Variables | Gateway Mode Variables |
+| Provider | API Mode (`.env`) | Gateway Mode (`.env`) |
 |----------|-------------------|----------------------|
-| **OpenAI** | `OPENAI_API_KEY` | `AGENTSEC_OPENAI_GATEWAY_URL`, `AGENTSEC_OPENAI_GATEWAY_API_KEY` |
-| **Azure OpenAI** | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION` | `AGENTSEC_AZURE_OPENAI_GATEWAY_URL`, `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` |
-| **AWS Bedrock** | `AWS_REGION` + auth (`AWS_PROFILE` or keys) | `AGENTSEC_BEDROCK_GATEWAY_URL` + AWS auth |
-| **GCP Vertex AI** | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` + ADC | `AGENTSEC_VERTEXAI_GATEWAY_URL` + ADC |
-| **Cohere** | `COHERE_API_KEY` | `AGENTSEC_COHERE_GATEWAY_URL`, `AGENTSEC_COHERE_GATEWAY_API_KEY` |
-| **Mistral AI** | `MISTRAL_API_KEY` | `AGENTSEC_MISTRAL_GATEWAY_URL`, `AGENTSEC_MISTRAL_GATEWAY_API_KEY` |
-| **MCP Tools** | `MCP_SERVER_URL`, `MCP_TIMEOUT` + MCP API vars | `AGENTSEC_MCP_GATEWAY_URL` |
+| **OpenAI** | `OPENAI_API_KEY` | `AGENTSEC_OPENAI_GATEWAY_API_KEY` |
+| **Azure OpenAI** | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME` | `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` |
+| **AWS Bedrock** | `AWS_REGION`, `AWS_PROFILE` (or access keys) | AWS Sig V4 (no API key needed) |
+| **GCP Vertex AI** | `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` + ADC | ADC OAuth2 (no API key needed) |
+| **Cohere** | `COHERE_API_KEY` | `AGENTSEC_COHERE_GATEWAY_API_KEY` |
+| **Mistral AI** | `MISTRAL_API_KEY` | `AGENTSEC_MISTRAL_GATEWAY_API_KEY` |
+| **MCP Tools** | - | `AGENTSEC_MCP_GATEWAY_API_KEY` |
+
+> All gateway URLs are configured in `agentsec.yaml` (not `.env`). MCP server URLs are configured per-example or in test scripts.
 
 ### By Example Path
 
-| Example | AI Defense | LLM Provider | Extra (Deploy Only) |
-|---------|------------|--------------|---------------------|
+| Example | AI Defense | LLM Provider | Extra |
+|---------|------------|--------------|-------|
+| `1-simple/basic_protection.py` | API or Gateway | OpenAI | - |
 | `1-simple/openai_example.py` | API or Gateway | OpenAI | - |
+| `1-simple/streaming_example.py` | API or Gateway | OpenAI | - |
+| `1-simple/gateway_mode_example.py` | Gateway | OpenAI | Gateway API key |
+| `1-simple/skip_inspection_example.py` | API or Gateway | OpenAI | - |
 | `1-simple/cohere_example.py` | API or Gateway | Cohere | - |
 | `1-simple/mistral_example.py` | API or Gateway | Mistral AI | - |
 | `1-simple/simple_strands_bedrock.py` | API or Gateway | Bedrock | - |
-| `1-simple/mcp_example.py` | API or Gateway | OpenAI + MCP | `MCP_SERVER_URL`, `MCP_TIMEOUT` |
+| `1-simple/mcp_example.py` | API or Gateway | OpenAI + MCP | MCP server URL |
 | `2-agent-frameworks/*/--openai` | API or Gateway | OpenAI | - |
 | `2-agent-frameworks/*/--azure` | API or Gateway | Azure OpenAI | - |
 | `2-agent-frameworks/*/--bedrock` | API or Gateway | Bedrock | - |
@@ -145,13 +160,13 @@ agentsec supports two ways to integrate with Cisco AI Defense:
 
 | Mode | How It Works | When to Use |
 |------|--------------|-------------|
-| **API Mode** (default) | SDK inspects requests via AI Defense API, then calls LLM directly | Most deployments |
-| **Gateway Mode** | SDK routes all traffic through AI Defense Gateway proxy | Centralized policy, caching |
+| **API Mode** | SDK inspects requests via AI Defense API, then calls LLM directly | Most deployments; simple setup |
+| **Gateway Mode** | SDK routes all traffic through AI Defense Gateway proxy | Centralized policy enforcement |
 
-Set via environment variable:
-```bash
-AGENTSEC_LLM_INTEGRATION_MODE=api      # or "gateway"
-AGENTSEC_MCP_INTEGRATION_MODE=api      # MCP can use different mode than LLM
+Set in `agentsec.yaml`:
+```yaml
+llm_integration_mode: gateway
+mcp_integration_mode: api
 ```
 
 ### Supported LLM Providers
@@ -195,10 +210,13 @@ agentsec inspects both **requests** (user prompts) and **responses** (LLM output
 | `monitor` | Inspect & log, never block | Testing, observability |
 | `enforce` | Inspect & block violations | Production |
 
-Set via environment variable:
-```bash
-AGENTSEC_API_MODE_LLM=enforce   # or "monitor", "off"
-AGENTSEC_API_MODE_MCP=enforce   # MCP tool inspection mode
+Set in `agentsec.yaml`:
+```yaml
+api_mode:
+  llm:
+    mode: enforce    # off | monitor | enforce
+  mcp:
+    mode: monitor
 ```
 
 ### Integration Mode Prerequisites
@@ -207,26 +225,30 @@ These prerequisites apply to both **Agent Frameworks** and **Agent Runtimes**.
 
 #### API Mode Prerequisites
 
-| Component | Required | Configuration |
-|-----------|:--------:|---------------|
-| **Cisco AI Defense API** | Yes | `AI_DEFENSE_API_MODE_LLM_ENDPOINT`, `AI_DEFENSE_API_MODE_LLM_API_KEY` |
-| **OpenAI** | If using | `OPENAI_API_KEY` |
-| **Azure OpenAI** | If using | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME` |
-| **AWS Bedrock** | If using | AWS credentials (profile, SSO, or env vars) |
-| **Vertex AI** | If using | GCP ADC (`gcloud auth application-default login`) |
-| **Cohere** | If using | `COHERE_API_KEY` |
-| **Mistral AI** | If using | `MISTRAL_API_KEY` |
+| Component | Required | `.env` (secrets) | `agentsec.yaml` (settings) |
+|-----------|:--------:|------------------|---------------------------|
+| **Cisco AI Defense API** | Yes | `AI_DEFENSE_API_MODE_LLM_API_KEY` | `api_mode.llm.endpoint`, `api_mode.llm.mode` |
+| **OpenAI** | If using | `OPENAI_API_KEY` | - |
+| **Azure OpenAI** | If using | `AZURE_OPENAI_API_KEY` | - |
+| **AWS Bedrock** | If using | AWS credentials (profile or env vars) | - |
+| **Vertex AI** | If using | GCP ADC (`gcloud auth application-default login`) | - |
+| **Cohere** | If using | `COHERE_API_KEY` | - |
+| **Mistral AI** | If using | `MISTRAL_API_KEY` | - |
+
+> Azure OpenAI also requires `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT_NAME`, and `AZURE_OPENAI_API_VERSION` in `.env`.
 
 #### Gateway Mode Prerequisites
 
-| Provider | Cisco AI Defense Gateway | Auth |
-|----------|--------------------------|------|
-| **OpenAI** | `AGENTSEC_OPENAI_GATEWAY_URL` | `AGENTSEC_OPENAI_GATEWAY_API_KEY` |
-| **Azure OpenAI** | `AGENTSEC_AZURE_OPENAI_GATEWAY_URL` | `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` |
-| **AWS Bedrock** | `AGENTSEC_BEDROCK_GATEWAY_URL` | AWS Sig V4 (no API key) |
-| **Vertex AI** | `AGENTSEC_VERTEXAI_GATEWAY_URL` | ADC OAuth2 (no API key) |
-| **Cohere** | `AGENTSEC_COHERE_GATEWAY_URL` | `AGENTSEC_COHERE_GATEWAY_API_KEY` |
-| **Mistral AI** | `AGENTSEC_MISTRAL_GATEWAY_URL` | `AGENTSEC_MISTRAL_GATEWAY_API_KEY` |
+Gateway URLs are configured in `agentsec.yaml` under `gateway_mode.llm_gateways`. Only secrets (API keys) go in `.env`.
+
+| Provider | Gateway URL | API Key (`.env`) |
+|----------|-------------|------------------|
+| **OpenAI** | `agentsec.yaml` | `AGENTSEC_OPENAI_GATEWAY_API_KEY` |
+| **Azure OpenAI** | `agentsec.yaml` | `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` |
+| **AWS Bedrock** | `agentsec.yaml` | AWS Sig V4 (no API key) |
+| **Vertex AI** | `agentsec.yaml` | ADC OAuth2 (no API key) |
+| **Cohere** | `agentsec.yaml` | `AGENTSEC_COHERE_GATEWAY_API_KEY` |
+| **Mistral AI** | `agentsec.yaml` | `AGENTSEC_MISTRAL_GATEWAY_API_KEY` |
 
 ---
 
@@ -235,23 +257,20 @@ These prerequisites apply to both **Agent Frameworks** and **Agent Runtimes**.
 The standard pattern for integrating agentsec:
 
 ```python
-# 1. Load environment variables FIRST
-from pathlib import Path
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-# 2. Import and enable protection BEFORE importing LLM clients
+# 1. Import and enable protection BEFORE importing LLM clients
 from aidefense.runtime import agentsec
-agentsec.protect(
-    api_mode_llm="enforce",     # LLM inspection mode
-    api_mode_mcp="enforce",     # MCP tool inspection mode
-)
 
-# 3. Import and use LLM clients normally - they're now protected
+# Option A: YAML config (recommended for production)
+agentsec.protect(config="agentsec.yaml")
+
+# Option B: Inline config (for quick testing)
+agentsec.protect(api_mode={"llm": {"mode": "enforce"}, "mcp": {"mode": "enforce"}})
+
+# 2. Import and use LLM clients normally - they're now protected
 from openai import OpenAI
 client = OpenAI()
 
-# 4. All calls are inspected by AI Defense
+# 3. All calls are inspected by AI Defense
 response = client.chat.completions.create(
     model="gpt-4o-mini",
     messages=[{"role": "user", "content": "Hello!"}]
@@ -263,8 +282,17 @@ response = client.chat.completions.create(
 ```python
 from aidefense.runtime import agentsec
 agentsec.protect(
-    llm_integration_mode="gateway",   # Use gateway instead of API
-    mcp_integration_mode="gateway",   # MCP through gateway too
+    llm_integration_mode="gateway",
+    gateway_mode={
+        "llm_gateways": {
+            "openai-default": {
+                "gateway_url": "https://gateway.../openai-conn",
+                "gateway_api_key": "your-key",
+                "provider": "openai",
+                "default": True,
+            },
+        },
+    },
 )
 ```
 
@@ -299,7 +327,8 @@ ai-defense-python-sdk/
 │   └── run-integration-tests.sh    # Run integration tests
 │
 └── examples/agentsec/
-    ├── .env.example                # Template - copy to .env
+    ├── agentsec.yaml               # Configuration (modes, gateways, timeouts)
+    ├── .env.example                # Template - copy to .env (secrets only)
     ├── README.md                   # This file
     │
     ├── 1-simple/                   # Standalone examples
@@ -315,6 +344,7 @@ ai-defense-python-sdk/
     │   └── tests/
     │
     ├── 2-agent-frameworks/         # Agent framework examples
+    │   ├── run-all-integration-tests.sh  # Run all framework tests
     │   ├── strands-agent/          # AWS Strands SDK
     │   ├── langgraph-agent/        # LangGraph
     │   ├── langchain-agent/        # LangChain
@@ -324,6 +354,7 @@ ai-defense-python-sdk/
     │   └── _shared/                # Shared provider configs & tests
     │
     └── 3-agent-runtimes/           # Cloud runtime examples
+        ├── run-all-integration-tests.sh  # Run all runtime tests
         ├── amazon-bedrock-agentcore/
         ├── gcp-vertex-ai-agent-engine/
         └── microsoft-foundry/
@@ -417,10 +448,20 @@ cd 2-agent-frameworks
 # Run integration tests (from repo root)
 cd /path/to/ai-defense-python-sdk
 ./scripts/run-integration-tests.sh --agents                # All frameworks, all providers
-./scripts/run-integration-tests.sh strands langgraph       # Specific frameworks
-./scripts/run-integration-tests.sh --api                   # API mode only
-./scripts/run-integration-tests.sh --gateway               # Gateway mode only
+./scripts/run-integration-tests.sh strands                 # Specific framework
+./scripts/run-integration-tests.sh --agents --api          # All frameworks, API mode only
+./scripts/run-integration-tests.sh --agents --gateway      # All frameworks, Gateway mode only
 ./scripts/run-integration-tests.sh strands --gateway       # Specific framework + mode
+```
+
+You can also run all framework tests directly from the `2-agent-frameworks/` directory:
+
+```bash
+cd examples/agentsec/2-agent-frameworks
+./run-all-integration-tests.sh                # All frameworks, all providers, both modes
+./run-all-integration-tests.sh --quick        # All frameworks, OpenAI only, both modes
+./run-all-integration-tests.sh --api          # API mode only
+./run-all-integration-tests.sh langgraph      # Specific framework
 ```
 
 ### Protection Coverage
@@ -521,7 +562,7 @@ Three deployment modes for Microsoft Azure AI Foundry agents:
 cd 3-agent-runtimes/microsoft-foundry
 poetry install
 
-# Run DEPLOY tests (default) - deploys to Azure and tests real endpoints
+# Run DEPLOY tests (default for this script) - deploys to Azure and tests real endpoints
 ./tests/integration/test-all-modes.sh              # All modes, deploy to Azure
 ./tests/integration/test-all-modes.sh agent-app --api  # Agent app, API only
 
@@ -530,19 +571,34 @@ poetry install
 ./tests/integration/test-all-modes.sh --local --api # API mode only, local
 ```
 
+> **Note**: Unlike Bedrock and GCP (which default to local), Foundry's test script defaults to deploy mode since it tests against already-deployed Azure endpoints.
+
 ### Runtime Integration Tests
 
+There are two ways to run runtime integration tests:
+
+**Option 1: Top-level script** (recommended — uses each runtime's own default mode)
+
 ```bash
-# Run from the 3-agent-runtimes directory
+# From the repo root
+cd /path/to/ai-defense-python-sdk
+
+./scripts/run-integration-tests.sh --runtimes            # All runtimes
+./scripts/run-integration-tests.sh amazon-bedrock-agentcore  # Specific runtime
+./scripts/run-integration-tests.sh --runtimes --api      # API mode only
+./scripts/run-integration-tests.sh --runtimes --deploy   # Force deploy mode for all
+```
+
+**Option 2: Runtimes directory script** (interactive — prompts before running)
+
+```bash
 cd examples/agentsec/3-agent-runtimes
 
-# Default mode: --deploy for AWS/GCP, --local for Azure
+# Default: --deploy for AgentCore/Vertex AI, --local for Foundry
 ./run-all-integration-tests.sh                     # Default test mode
 
-# Run LOCAL tests for all runtimes (no cloud deployment)
+# Override modes
 ./run-all-integration-tests.sh --local             # All runtimes, local mode
-
-# Run DEPLOY tests for all runtimes (deploys to cloud)
 ./run-all-integration-tests.sh --deploy            # All runtimes, deploy mode
 
 # Run specific runtime
@@ -553,63 +609,66 @@ cd examples/agentsec/3-agent-runtimes
 ./run-all-integration-tests.sh --quick             # Quick tests for all runtimes
 ```
 
+> **Note**: Default test modes differ by script. The top-level `scripts/run-integration-tests.sh` uses each runtime's own default (local for Bedrock/Vertex AI, deploy for Foundry). The `run-all-integration-tests.sh` in `3-agent-runtimes/` inverts this (deploy for Bedrock/Vertex AI, local for Foundry).
+
 ---
 
 ## Configuration
 
-### Environment Variables
+agentsec uses two configuration files:
 
-Copy `.env.example` to `.env` and configure:
+| File | Purpose | Contents |
+|------|---------|----------|
+| **`agentsec.yaml`** | All non-secret settings | Integration modes, gateway URLs, endpoints, timeouts, retry policy, inspection modes |
+| **`.env`** | Secrets only | API keys, credentials (referenced via `${VAR}` in YAML) |
 
-#### AI Defense API Mode (Required for API integration)
+### Getting Started
+
+```bash
+# Copy the template files
+cp .env.example .env
+# Edit .env — fill in your API keys and credentials
+# Edit agentsec.yaml — configure integration modes, gateway URLs, inspection modes
+```
+
+### Secrets in `.env`
+
+#### AI Defense API Keys (Required for API integration)
 
 | Variable | Required | Description |
 |----------|:--------:|-------------|
-| `AI_DEFENSE_API_MODE_LLM_ENDPOINT` | Yes | AI Defense API endpoint for LLM inspection |
 | `AI_DEFENSE_API_MODE_LLM_API_KEY` | Yes | AI Defense API key for LLM inspection |
-| `AI_DEFENSE_API_MODE_MCP_ENDPOINT` | For MCP | AI Defense API endpoint for MCP inspection |
 | `AI_DEFENSE_API_MODE_MCP_API_KEY` | For MCP | AI Defense API key for MCP inspection |
-| `AGENTSEC_API_MODE_LLM` | No | LLM mode: `enforce`, `monitor`, `off` (default: `monitor`) |
-| `AGENTSEC_API_MODE_MCP` | No | MCP mode: `enforce`, `monitor`, `off` (default: `monitor`) |
-| `AGENTSEC_LLM_INTEGRATION_MODE` | No | LLM integration: `api`, `gateway` (default: `api`) |
-| `AGENTSEC_MCP_INTEGRATION_MODE` | No | MCP integration: `api`, `gateway` (default: `api`) |
 
-#### AI Defense Gateway Mode (For Gateway integration)
+#### Gateway API Keys (Required for Gateway integration)
 
 | Variable | When Required | Description |
 |----------|:-------------:|-------------|
-| `AGENTSEC_OPENAI_GATEWAY_URL` | Gateway + OpenAI | OpenAI gateway URL |
 | `AGENTSEC_OPENAI_GATEWAY_API_KEY` | Gateway + OpenAI | OpenAI gateway API key |
-| `AGENTSEC_AZURE_OPENAI_GATEWAY_URL` | Gateway + Azure | Azure OpenAI gateway URL |
 | `AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY` | Gateway + Azure | Azure OpenAI gateway API key |
-| `AGENTSEC_BEDROCK_GATEWAY_URL` | Gateway + Bedrock | Bedrock gateway URL (uses AWS Sig V4 auth) |
-| `AGENTSEC_VERTEXAI_GATEWAY_URL` | Gateway + Vertex | Vertex AI gateway URL (uses ADC OAuth2) |
-| `AGENTSEC_COHERE_GATEWAY_URL` | Gateway + Cohere | Cohere gateway URL |
 | `AGENTSEC_COHERE_GATEWAY_API_KEY` | Gateway + Cohere | Cohere gateway API key |
-| `AGENTSEC_MISTRAL_GATEWAY_URL` | Gateway + Mistral | Mistral AI gateway URL |
 | `AGENTSEC_MISTRAL_GATEWAY_API_KEY` | Gateway + Mistral | Mistral AI gateway API key |
-| `AGENTSEC_MCP_GATEWAY_URL` | Gateway + MCP | MCP gateway URL |
 | `AGENTSEC_MCP_GATEWAY_API_KEY` | Gateway + MCP | MCP gateway API key |
 
-#### Advanced Configuration (Optional)
+> All gateway URLs are configured in `agentsec.yaml` — only API keys go in `.env`.
+> Bedrock uses AWS Sig V4 auth and Vertex AI uses ADC OAuth2 — neither requires a gateway API key.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENTSEC_TIMEOUT` | 30000 | API request timeout in milliseconds |
-| `AGENTSEC_RETRY_TOTAL` | 3 | Maximum retry attempts for failed requests |
-| `AGENTSEC_RETRY_BACKOFF_FACTOR` | 0.5 | Exponential backoff multiplier |
-| `AGENTSEC_RETRY_STATUS_FORCELIST` | 429,500,502,503,504 | HTTP status codes to retry |
-| `AGENTSEC_POOL_MAX_CONNECTIONS` | 10 | Maximum connections in pool |
-| `AGENTSEC_POOL_MAX_KEEPALIVE` | 5 | Maximum keepalive connections |
-| `AGENTSEC_LLM_ENTITY_TYPES` | (all) | Comma-separated entity types to filter |
+### Settings in `agentsec.yaml`
 
-#### Metadata Configuration (Optional)
+All non-secret configuration lives in `agentsec.yaml`. Key sections:
 
-| Variable | Description |
-|----------|-------------|
-| `AGENTSEC_USER` | Default user identifier for inspection context |
-| `AGENTSEC_SRC_APP` | Default source application name |
-| `AGENTSEC_CLIENT_TRANSACTION_ID` | Default transaction ID prefix |
+| Section | What It Configures | Example |
+|---------|-------------------|---------|
+| `llm_integration_mode` | API or Gateway for LLM calls | `gateway` |
+| `mcp_integration_mode` | API or Gateway for MCP calls | `api` |
+| `api_mode.llm` | API inspection endpoint, mode, API key ref | `mode: enforce` |
+| `api_mode.mcp` | MCP inspection endpoint, mode, API key ref | `mode: monitor` |
+| `gateway_mode.llm_gateways` | Named gateway entries with URLs and providers | See `agentsec.yaml` |
+| `gateway_mode.mcp_gateways` | MCP server → gateway URL mappings | See `agentsec.yaml` |
+| `*.defaults` | Timeout, retry, fail_open per mode | `timeout: 5` |
+| `logging` | Log level and format | `level: DEBUG` |
+
+> See `agentsec.yaml` for the full configuration reference with inline documentation.
 
 ### Provider Credentials
 
@@ -638,18 +697,19 @@ AZURE_OPENAI_API_VERSION=2024-08-01-preview
 <summary><strong>AWS Bedrock</strong></summary>
 
 ```bash
-# Option 1: Access keys
-AWS_ACCESS_KEY_ID=your-access-key
-AWS_SECRET_ACCESS_KEY=your-secret-key
+AWS_AUTH_METHOD=profile    # profile | session_token
 AWS_REGION=us-east-1
 
-# Option 2: Profile (recommended)
-AWS_PROFILE=your-profile
-AWS_REGION=us-east-1
+# For profile auth (recommended)
+AWS_PROFILE=default
 
-# Option 3: SSO (interactive)
-aws sso login
+# For session_token auth (uncomment if needed)
+# AWS_ACCESS_KEY_ID=your-access-key
+# AWS_SECRET_ACCESS_KEY=your-secret-key
+# AWS_SESSION_TOKEN=your-session-token
 ```
+
+You can also use SSO: `aws sso login`
 
 </details>
 
@@ -705,34 +765,49 @@ MISTRAL_API_KEY=your-mistral-api-key
 
 ### Programmatic Configuration
 
-All environment variables can also be set via `protect()` parameters:
+Configuration can be provided via `protect()` parameters using structured dicts:
 
 ```python
 from aidefense.runtime import agentsec
 
+# Option 1: YAML config file (recommended)
+agentsec.protect(config="agentsec.yaml")
+
+# Option 2: Inline configuration
 agentsec.protect(
-    # Core modes
-    api_mode_llm="enforce",
-    api_mode_mcp="monitor",
-    
-    # Advanced: Retry policy
-    retry_total=5,
-    retry_backoff=1.0,
-    retry_status_codes=[429, 500, 502, 503, 504],
-    
-    # Advanced: Connection pool
-    timeout=60000,  # 60 seconds
+    api_mode={
+        "llm": {
+            "mode": "enforce",
+            "endpoint": "https://preview.api.inspect.aidefense.aiteam.cisco.com/api",
+            "api_key": "your-api-key",
+        },
+        "mcp": {"mode": "monitor"},
+        "llm_defaults": {"fail_open": True, "timeout": 5},
+        "mcp_defaults": {"fail_open": True},
+    },
+    gateway_mode={
+        "llm_gateways": {
+            "openai-default": {
+                "gateway_url": "https://gateway.../openai-conn",
+                "gateway_api_key": "your-key",
+                "provider": "openai",
+                "default": True,
+            },
+        },
+        "mcp_gateways": {
+            "https://remote.mcpservers.org/fetch/mcp": {"gateway_url": "https://gateway.../mcp", "gateway_api_key": "your-key"},
+        },
+    },
+    # Connection pool (global)
     pool_max_connections=20,
     pool_max_keepalive=10,
-    
-    # Advanced: Entity filtering
-    api_mode_llm_entity_types=["pii", "secrets"],
-    
-    # Advanced: Custom logger
+    # Custom logger
     custom_logger=my_logger,
     log_file="/var/log/agentsec.log",
 )
 ```
+
+See `agentsec.yaml` for a complete YAML configuration reference.
 
 ### YAML Config (Agent Frameworks)
 
@@ -885,7 +960,7 @@ cd /path/to/ai-defense-python-sdk
 | `SecurityPolicyError` raised | Expected in enforce mode when content violates policies |
 | `[BLOCKED] Prompt Injection` | AI Defense detected prompt injection - this is working correctly |
 | No inspection happening | Ensure `agentsec.protect()` is called BEFORE importing LLM clients |
-| MCP tool calls not inspected | Ensure `mcp` package is installed and `AGENTSEC_API_MODE_MCP` is set |
+| MCP tool calls not inspected | Ensure `mcp` package is installed and `api_mode.mcp.mode` is set in `agentsec.yaml` |
 | Poetry version error | Remove `package-mode = false` from pyproject.toml if using older Poetry |
 
 ### Debug Logging

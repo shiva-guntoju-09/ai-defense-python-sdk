@@ -34,16 +34,16 @@ class TestMonitorMode:
     """Tests for monitor mode behavior."""
 
     def test_monitor_mode_sets_correct_mode(self):
-        """Test that protect(api_mode_llm='monitor') sets mode correctly."""
+        """Test that protect(api_mode={"llm": {"mode": "monitor"}}) sets mode correctly."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_llm="monitor")
+            agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
             assert get_llm_mode() == "monitor"
 
     def test_monitor_mode_with_block_does_not_raise(self):
         """Test that monitor mode with block response logs but does not raise."""
         with _mock_session_request({"action": "Block", "reasons": ["policy_violation"], "is_safe": False}):
             with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect(api_mode_llm="monitor", patch_clients=False)
+                agentsec.protect(api_mode={"llm": {"mode": "monitor"}}, patch_clients=False)
             from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
             inspector = LLMInspector(
                 api_key=TEST_API_KEY,
@@ -59,7 +59,7 @@ class TestMonitorMode:
         """Test that monitor mode with allow response passes through."""
         with _mock_session_request({"action": "Allow", "reasons": [], "is_safe": True}):
             with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect(api_mode_llm="monitor", patch_clients=False)
+                agentsec.protect(api_mode={"llm": {"mode": "monitor"}}, patch_clients=False)
             from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
             inspector = LLMInspector(
                 api_key=TEST_API_KEY,
@@ -78,7 +78,7 @@ class TestMonitorMode:
             logger = logging.getLogger("agentsec")
             logger.handlers.clear()
             with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect(api_mode_llm="monitor", patch_clients=False)
+                agentsec.protect(api_mode={"llm": {"mode": "monitor"}}, patch_clients=False)
             from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
             inspector = LLMInspector(
                 api_key=TEST_API_KEY,
@@ -95,7 +95,7 @@ class TestMonitorMode:
         """Test that monitor mode should never raise SecurityPolicyError."""
         # This tests the principle - actual blocking is in patchers
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_llm="monitor")
+            agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
         
         # Verify mode is monitor (patchers check this before deciding to block)
         assert get_llm_mode() == "monitor"

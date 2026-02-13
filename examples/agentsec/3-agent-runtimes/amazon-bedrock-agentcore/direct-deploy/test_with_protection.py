@@ -38,23 +38,30 @@ from aidefense.runtime import agentsec
 
 agentsec.protect(
     llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
-    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
-    api_mode_llm_endpoint=os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
-    api_mode_llm_api_key=os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
-    api_mode_fail_open_llm=True,
+    api_mode={
+        "llm": {
+            "mode": os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
+            "endpoint": os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
+            "api_key": os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
+        },
+        "llm_defaults": {"fail_open": True},
+    },
     # Note: AgentCore operations use the Bedrock gateway configuration
-    providers={
-        "bedrock": {
-            "gateway_url": os.getenv("AGENTSEC_BEDROCK_GATEWAY_URL"),
-            "gateway_api_key": os.getenv("AGENTSEC_BEDROCK_GATEWAY_API_KEY"),
+    gateway_mode={
+        "llm_gateways": {
+            "bedrock-default": {
+                "gateway_url": os.getenv("AGENTSEC_BEDROCK_GATEWAY_URL"),
+                "gateway_api_key": os.getenv("AGENTSEC_BEDROCK_GATEWAY_API_KEY"),
+                "auth_mode": "aws_sigv4",
+                "provider": "bedrock",
+                "default": True,
+            },
         },
     },
     auto_dotenv=False,
 )
 
-print(f"[agentsec] Mode: {os.getenv('AGENTSEC_API_MODE_LLM', 'monitor')} | "
-      f"Integration: {os.getenv('AGENTSEC_LLM_INTEGRATION_MODE', 'api')} | "
-      f"Patched: {agentsec.get_patched_clients()}")
+print(f"[agentsec] Patched: {agentsec.get_patched_clients()}")
 
 # =============================================================================
 # Now import boto3 (AFTER agentsec.protect())

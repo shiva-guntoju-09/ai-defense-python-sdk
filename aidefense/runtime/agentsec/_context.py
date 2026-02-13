@@ -48,6 +48,11 @@ _inspection_done: ContextVar[bool] = ContextVar(
 _skip_llm: ContextVar[bool] = ContextVar("_skip_llm", default=False)
 _skip_mcp: ContextVar[bool] = ContextVar("_skip_mcp", default=False)
 
+# Active named LLM gateway for context-based routing
+_active_gateway: ContextVar[Optional[str]] = ContextVar(
+    "_active_gateway", default=None
+)
+
 
 def get_inspection_context() -> InspectionContext:
     """
@@ -278,6 +283,110 @@ def no_inspection(llm: bool = True, mcp: bool = True) -> Callable[[F], F]:
             @functools.wraps(func)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
                 with skip_inspection(llm=llm, mcp=mcp):
+                    return func(*args, **kwargs)
+            return sync_wrapper  # type: ignore
+    return decorator
+
+
+# =============================================================================
+# Gateway Routing API
+# =============================================================================
+
+def get_active_gateway() -> Optional[str]:
+    """Get the currently active named LLM gateway.
+
+    Returns:
+        The gateway name if inside a ``gateway()`` context, else None.
+    """
+    return _active_gateway.get()
+
+
+class gateway:
+    """Context manager to route LLM calls through a named gateway.
+
+    The gateway name must correspond to a key in
+    ``gateway_mode.llm_gateways`` in the configuration.
+
+    Works with both sync and async code:
+
+    Sync usage::
+
+        with agentsec.gateway("math-gateway"):
+            response = client.chat.completions.create(...)
+
+    Async usage::
+
+        async with agentsec.gateway("math-gateway"):
+            response = await client.chat.completions.create(...)
+
+    Nesting is supported -- the innermost gateway wins::
+
+        with agentsec.gateway("outer"):
+            # uses "outer"
+            with agentsec.gateway("inner"):
+                # uses "inner"
+            # back to "outer"
+
+    Args:
+        name: The name of the LLM gateway to route through.
+    """
+
+    def __init__(self, name: str):
+        self._name = name
+        self._token: Optional[Token[Optional[str]]] = None
+
+    def __enter__(self) -> "gateway":
+        """Enter sync context -- set the active gateway."""
+        self._token = _active_gateway.set(self._name)
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit sync context -- restore the previous gateway."""
+        if self._token is not None:
+            _active_gateway.reset(self._token)
+
+    async def __aenter__(self) -> "gateway":
+        """Enter async context -- set the active gateway."""
+        self._token = _active_gateway.set(self._name)
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit async context -- restore the previous gateway."""
+        if self._token is not None:
+            _active_gateway.reset(self._token)
+
+
+def use_gateway(name: str) -> Callable[[F], F]:
+    """Decorator to route all LLM calls within a function through a named gateway.
+
+    Works with both sync and async functions::
+
+        @agentsec.use_gateway("math-gateway")
+        def solve_math(problem: str):
+            return client.chat.completions.create(...)
+
+        @agentsec.use_gateway("english-gateway")
+        async def translate(text: str):
+            return await client.chat.completions.create(...)
+
+    Args:
+        name: The name of the LLM gateway to route through.
+
+    Returns:
+        Decorated function that routes calls through the named gateway.
+    """
+
+    def decorator(func: F) -> F:
+        if asyncio.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                async with gateway(name):
+                    return await func(*args, **kwargs)
+            return async_wrapper  # type: ignore
+        else:
+            @functools.wraps(func)
+            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                with gateway(name):
                     return func(*args, **kwargs)
             return sync_wrapper  # type: ignore
     return decorator

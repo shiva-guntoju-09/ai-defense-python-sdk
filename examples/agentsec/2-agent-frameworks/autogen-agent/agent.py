@@ -43,19 +43,21 @@ if shared_env.exists():
 # MINIMAL agentsec integration: Just 2 lines!
 # =============================================================================
 from aidefense.runtime import agentsec
-agentsec.protect()  # Reads config from .env, patches clients
+config_path = str(Path(__file__).parent.parent.parent / "agentsec.yaml")
+# Allow integration test script to override YAML integration mode via env vars
+agentsec.protect(
+    config=config_path,
+    llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE"),
+    mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE"),
+)
 
 # That's it! Now import your frameworks normally
 #
-# Alternative: Configure Gateway mode programmatically (provider-specific):
-#   agentsec.protect(
-#       llm_integration_mode="gateway",
-#       providers={"openai": {"gateway_url": "https://gateway.../conn", "gateway_api_key": "key"}},
-#       auto_dotenv=False,
-#   )
+# Alternative: Configure inline (for quick testing):
+#   agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
 from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
 
-print(f"[agentsec] LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'monitor')} | Integration: {os.getenv('AGENTSEC_LLM_INTEGRATION_MODE', 'api')} | Patched: {agentsec.get_patched_clients()}")
+print(f"[agentsec] Patched: {agentsec.get_patched_clients()}")
 
 # =============================================================================
 # Import shared provider infrastructure
@@ -217,6 +219,9 @@ def create_llm_config_from_provider():
             'vertex_ai': True,     # Enable Vertex AI mode
             'project_id': config.get('project', ''),
             'location': config.get('location', 'us-central1'),
+            # Disable response validation to handle newer FinishReason values
+            # (e.g., reason 15 for tool calls) that the SDK doesn't recognize yet.
+            'response_validation': False,
         })
         logger.debug(f"Vertex AI config: project={config.get('project')}, location={config.get('location')}")
         
@@ -236,10 +241,12 @@ def create_agents(llm_config):
     assistant = AssistantAgent(
         name="assistant",
         llm_config=llm_config,
-        system_message="""You are a helpful assistant with access to the fetch_url tool.
+        system_message="""You are a helpful assistant with access to the fetch_tool function.
 
-When the user asks to fetch a URL, use the fetch_tool function.
-After fetching, summarize the content for the user.
+CRITICAL INSTRUCTIONS:
+1. When the user asks to fetch a URL or asks about a webpage, you MUST use the fetch_tool function.
+2. ALWAYS use the tool to get actual content rather than guessing what a page contains.
+3. After fetching, summarize the content for the user.
 
 Tool: fetch_tool(url='https://example.com')
 

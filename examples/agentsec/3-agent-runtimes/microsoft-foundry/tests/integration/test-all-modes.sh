@@ -222,27 +222,47 @@ test_local_agent() {
     export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
     export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
     
-    # Enable debug logging for verbose output
-    if [ "$VERBOSE" = "true" ]; then
-        export AGENTSEC_LOG_LEVEL="DEBUG"
-    else
-        export AGENTSEC_LOG_LEVEL="INFO"
-    fi
+    # Enable debug logging so inspection log lines are captured in the log file
+    export AGENTSEC_LOG_LEVEL="DEBUG"
     
     local start_time=$(date +%s)
     
-    # Run the agent directly
+    # Run the agent directly, then also exercise MCP tool protection
     if [ -n "$TIMEOUT_CMD" ]; then
         $TIMEOUT_CMD "$TIMEOUT_SECONDS" poetry run python -c "
+import os
 from _shared import invoke_agent
 result = invoke_agent('$TEST_QUESTION')
 print('RESULT:', result)
+print('[SUCCESS] LLM test completed')
+
+# Also exercise MCP tool protection
+if os.getenv('MCP_SERVER_URL'):
+    print('[test] Testing MCP tool protection...')
+    from _shared.mcp_tools import _sync_call_mcp_tool
+    mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+    print(f'[test] MCP Result: {mcp_result[:100]}...')
+    print('[MCP_SUCCESS] MCP tool call completed')
+else:
+    print('[test] MCP_SERVER_URL not set, skipping MCP test')
 " > "$log_file" 2>&1 || local exit_code=$?
     else
         poetry run python -c "
+import os
 from _shared import invoke_agent
 result = invoke_agent('$TEST_QUESTION')
 print('RESULT:', result)
+print('[SUCCESS] LLM test completed')
+
+# Also exercise MCP tool protection
+if os.getenv('MCP_SERVER_URL'):
+    print('[test] Testing MCP tool protection...')
+    from _shared.mcp_tools import _sync_call_mcp_tool
+    mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+    print(f'[test] MCP Result: {mcp_result[:100]}...')
+    print('[MCP_SUCCESS] MCP tool call completed')
+else:
+    print('[test] MCP_SERVER_URL not set, skipping MCP test')
 " > "$log_file" 2>&1 || local exit_code=$?
     fi
     exit_code=${exit_code:-0}
@@ -300,7 +320,27 @@ print('RESULT:', result)
         all_checks_passed=false
     fi
     
-    # Check 6: No errors
+    # Check 6: MCP Request inspection
+    if grep -qi "MCP.*Request inspection\|MCP TOOL CALL.*fetch\|call_tool.*fetch.*Request" "$log_file"; then
+        log_pass "MCP Request inspection executed"
+    elif grep -q "MCP_SERVER_URL not set" "$log_file"; then
+        log_skip "MCP test skipped (MCP_SERVER_URL not set)"
+    else
+        log_fail "MCP Request inspection NOT executed"
+        all_checks_passed=false
+    fi
+    
+    # Check 7: MCP Response inspection
+    if grep -qi "MCP.*Response inspection\|call_tool.*Response.*allow\|Response decision" "$log_file"; then
+        log_pass "MCP Response inspection executed"
+    elif grep -q "MCP_SERVER_URL not set" "$log_file"; then
+        : # Already reported skip above
+    else
+        log_fail "MCP Response inspection NOT executed"
+        all_checks_passed=false
+    fi
+    
+    # Check 8: No errors
     if grep -E "^Traceback|BLOCKED|^\s*ERROR\s*:" "$log_file" | grep -v "DEBUG:" > /dev/null 2>&1; then
         local error_line=$(grep -E "^Traceback|BLOCKED|^\s*ERROR\s*:" "$log_file" | grep -v "DEBUG:" | head -1)
         log_fail "Errors found: $error_line"
@@ -807,11 +847,8 @@ test_mcp_protection() {
     export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
     export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
     
-    if [ "$VERBOSE" = "true" ]; then
-        export AGENTSEC_LOG_LEVEL="DEBUG"
-    else
-        export AGENTSEC_LOG_LEVEL="INFO"
-    fi
+    # Enable debug logging so MCP inspection log lines are captured in the log file
+    export AGENTSEC_LOG_LEVEL="DEBUG"
     
     local start_time=$(date +%s)
     
@@ -930,11 +967,8 @@ test_mcp_via_agent() {
     export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
     export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
     
-    if [ "$VERBOSE" = "true" ]; then
-        export AGENTSEC_LOG_LEVEL="DEBUG"
-    else
-        export AGENTSEC_LOG_LEVEL="INFO"
-    fi
+    # Enable debug logging so inspection log lines are captured in the log file
+    export AGENTSEC_LOG_LEVEL="DEBUG"
     
     local start_time=$(date +%s)
     

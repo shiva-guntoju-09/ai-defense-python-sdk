@@ -241,7 +241,7 @@ class TestAgentFactoryStructure:
         
         assert "llm_integration_mode" in content, "Should configure llm_integration_mode"
         assert "AGENTSEC_LLM_INTEGRATION_MODE" in content, "Should read from AGENTSEC_LLM_INTEGRATION_MODE env var"
-        assert "providers" in content, "Should configure providers"
+        assert "llm_gateways" in content, "Should configure llm_gateways"
 
     def test_agent_factory_configures_api_mode(self):
         """Test that agent_factory.py has API mode configuration."""
@@ -251,10 +251,10 @@ class TestAgentFactoryStructure:
         with open(agent_factory_path, "r") as f:
             content = f.read()
         
-        assert "api_mode_llm" in content, "Should configure api_mode_llm"
+        assert "api_mode=" in content, "Should configure api_mode"
         assert "AGENTSEC_API_MODE_LLM" in content, "Should read from AGENTSEC_API_MODE_LLM env var"
-        assert "api_mode_llm_endpoint" in content, "Should configure api endpoint"
-        assert "api_mode_llm_api_key" in content, "Should configure api key"
+        assert "endpoint" in content, "Should configure api endpoint"
+        assert "api_key" in content, "Should configure api key"
 
     def test_agent_factory_has_invoke_function(self):
         """Test that agent_factory.py exports invoke_agent function."""
@@ -570,7 +570,7 @@ class TestMCPTools:
         with open(agent_factory_file, "r") as f:
             content = f.read()
         assert "mcp_integration_mode" in content, "agent_factory should configure mcp_integration_mode"
-        assert "api_mode_mcp" in content, "agent_factory should configure api_mode_mcp"
+        assert '"mcp"' in content, "agent_factory should configure mcp in api_mode"
     
     def test_init_exports_mcp_tools(self):
         """Test that __init__.py exports MCP tools."""

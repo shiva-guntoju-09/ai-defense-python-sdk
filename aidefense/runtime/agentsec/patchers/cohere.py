@@ -34,7 +34,7 @@ from ..decision import Decision
 from ..exceptions import SecurityPolicyError
 from ..inspectors.api_llm import LLMInspector
 from . import is_patched, mark_patched
-from ._base import safe_import
+from ._base import safe_import, resolve_gateway_settings
 
 logger = logging.getLogger("aidefense.runtime.agentsec.patchers.cohere")
 
@@ -52,7 +52,7 @@ def _get_inspector() -> LLMInspector:
                 if not _state.is_initialized():
                     logger.warning("agentsec.protect() not called, using default config")
                 _inspector = LLMInspector(
-                    fail_open=_state.get_api_mode_fail_open_llm(),
+                    fail_open=_state.get_api_llm_fail_open(),
                     default_rules=_state.get_llm_rules(),
                 )
                 from ..inspectors import register_inspector_for_cleanup
@@ -150,7 +150,7 @@ def _enforce_decision(decision: Decision) -> None:
 
 
 def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision]:
-    fail_open = _state.get_api_mode_fail_open_llm()
+    fail_open = _state.get_api_llm_fail_open()
     logger.warning(f"[{operation}] Inspection error: {type(error).__name__}: {error}")
     if fail_open:
         logger.warning("llm_fail_open=True, allowing request despite inspection error")
@@ -160,23 +160,6 @@ def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision
         Decision.block(reasons=[f"Inspection error: {type(error).__name__}: {error}"]),
         f"Inspection failed and fail_open=False: {error}",
     )
-
-
-def _is_gateway_mode() -> bool:
-    """Check if LLM integration mode is 'gateway'."""
-    return _state.get_llm_integration_mode() == "gateway"
-
-
-def _should_use_gateway() -> bool:
-    """Check if we should use gateway mode for Cohere (gateway enabled, configured, and not skipped)."""
-    from .._context import is_llm_skip_active
-    if is_llm_skip_active():
-        return False
-    if not _is_gateway_mode():
-        return False
-    gateway_url = _state.get_provider_gateway_url("cohere")
-    gateway_api_key = _state.get_provider_gateway_api_key("cohere")
-    return bool(gateway_url and gateway_api_key)
 
 
 def _serialize_messages_for_gateway(messages: Any) -> List[Dict[str, Any]]:
@@ -222,17 +205,18 @@ def _handle_gateway_call_sync(
     kwargs: Dict[str, Any],
     normalized: List[Dict[str, Any]],
     metadata: Dict[str, Any],
+    gw_settings: Any,
 ) -> Any:
     """Route Cohere chat request through AI Defense Gateway (sync). Gateway returns full response; streaming not used."""
     import httpx
-    gateway_url = _state.get_provider_gateway_url("cohere")
-    gateway_api_key = _state.get_provider_gateway_api_key("cohere")
+    gateway_url = gw_settings.url
+    gateway_api_key = gw_settings.api_key
     if not gateway_url or not gateway_api_key:
         logger.warning("Gateway mode enabled but Cohere gateway not configured")
         set_inspection_context(decision=Decision.allow(reasons=["Cohere gateway not configured"]), done=True)
         raise SecurityPolicyError(
             Decision.block(reasons=["Cohere gateway not configured"]),
-            "Gateway mode enabled but AGENTSEC_COHERE_GATEWAY_URL not set",
+            "Gateway mode enabled but Cohere gateway not configured (check gateway_mode.llm_gateways for a cohere provider entry in config)",
         )
     messages = kwargs.get("messages", [])
     request_body = {
@@ -246,7 +230,7 @@ def _handle_gateway_call_sync(
     if "/chat" not in full_url and "/v2" not in full_url:
         full_url = f"{full_url}/v2/chat"
     try:
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=float(gw_settings.timeout)) as client:
             response = client.post(
                 full_url,
                 json=request_body,
@@ -261,7 +245,7 @@ def _handle_gateway_call_sync(
         return _dict_to_cohere_response(response_data)
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] Cohere HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise
         raise SecurityPolicyError(
@@ -272,7 +256,7 @@ def _handle_gateway_call_sync(
         raise
     except Exception as e:
         logger.error(f"[GATEWAY] Cohere error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise
         raise
@@ -282,16 +266,17 @@ async def _handle_gateway_call_async(
     kwargs: Dict[str, Any],
     normalized: List[Dict[str, Any]],
     metadata: Dict[str, Any],
+    gw_settings: Any,
 ) -> Any:
     """Route Cohere chat request through AI Defense Gateway (async)."""
     import httpx
-    gateway_url = _state.get_provider_gateway_url("cohere")
-    gateway_api_key = _state.get_provider_gateway_api_key("cohere")
+    gateway_url = gw_settings.url
+    gateway_api_key = gw_settings.api_key
     if not gateway_url or not gateway_api_key:
         logger.warning("Gateway mode enabled but Cohere gateway not configured")
         raise SecurityPolicyError(
             Decision.block(reasons=["Cohere gateway not configured"]),
-            "Gateway mode enabled but AGENTSEC_COHERE_GATEWAY_URL not set",
+            "Gateway mode enabled but Cohere gateway not configured (check gateway_mode.llm_gateways for a cohere provider entry in config)",
         )
     messages = kwargs.get("messages", [])
     request_body = {
@@ -305,7 +290,7 @@ async def _handle_gateway_call_async(
     if "/chat" not in full_url and "/v2" not in full_url:
         full_url = f"{full_url}/v2/chat"
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=float(gw_settings.timeout)) as client:
             response = await client.post(
                 full_url,
                 json=request_body,
@@ -320,7 +305,7 @@ async def _handle_gateway_call_async(
         return _dict_to_cohere_response(response_data)
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] Cohere async HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise
         raise SecurityPolicyError(
@@ -331,7 +316,7 @@ async def _handle_gateway_call_async(
         raise
     except Exception as e:
         logger.error(f"[GATEWAY] Cohere async error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise
         raise
@@ -497,9 +482,10 @@ def _wrap_chat(wrapped, instance, args, kwargs):
     normalized = _normalize_messages(messages)
     metadata = get_inspection_context().metadata
 
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("cohere")
+    if gw_settings:
         logger.debug(f"[PATCHED] Cohere V2Client.chat gateway mode - routing to AI Defense Gateway")
-        return _handle_gateway_call_sync(kwargs, normalized, metadata)
+        return _handle_gateway_call_sync(kwargs, normalized, metadata, gw_settings)
 
     logger.debug(f"[PATCHED] Cohere V2Client.chat model={model} messages={len(normalized)}")
     try:
@@ -540,9 +526,10 @@ def _wrap_chat_stream(wrapped, instance, args, kwargs):
     normalized = _normalize_messages(messages)
     metadata = get_inspection_context().metadata
 
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("cohere")
+    if gw_settings:
         logger.debug(f"[PATCHED] Cohere V2Client.chat_stream gateway mode - full response as single chunk")
-        response = _handle_gateway_call_sync(kwargs, normalized, metadata)
+        response = _handle_gateway_call_sync(kwargs, normalized, metadata, gw_settings)
         return _CohereFakeStreamWrapper(response)
 
     logger.debug(f"[PATCHED] Cohere V2Client.chat_stream model={model} messages={len(normalized)}")
@@ -571,9 +558,10 @@ async def _wrap_chat_async(wrapped, instance, args, kwargs):
     normalized = _normalize_messages(messages)
     metadata = get_inspection_context().metadata
 
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("cohere")
+    if gw_settings:
         logger.debug(f"[PATCHED] Cohere AsyncV2Client.chat gateway mode - routing to AI Defense Gateway")
-        return await _handle_gateway_call_async(kwargs, normalized, metadata)
+        return await _handle_gateway_call_async(kwargs, normalized, metadata, gw_settings)
 
     logger.debug(f"[PATCHED] Cohere AsyncV2Client.chat model={model} messages={len(normalized)}")
     try:
@@ -614,9 +602,10 @@ async def _wrap_chat_stream_async(wrapped, instance, args, kwargs):
     normalized = _normalize_messages(messages)
     metadata = get_inspection_context().metadata
 
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("cohere")
+    if gw_settings:
         logger.debug(f"[PATCHED] Cohere AsyncV2Client.chat_stream gateway mode - full response as single chunk")
-        response = await _handle_gateway_call_async(kwargs, normalized, metadata)
+        response = await _handle_gateway_call_async(kwargs, normalized, metadata, gw_settings)
         return _CohereAsyncFakeStreamWrapper(response)
 
     logger.debug(f"[PATCHED] Cohere AsyncV2Client.chat_stream model={model} messages={len(normalized)}")

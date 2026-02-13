@@ -73,51 +73,59 @@ def _initialize_agentsec():
     # Import here to defer dependency loading
     from aidefense.runtime import agentsec
     
-    # Build provider config based on which SDK we're using
-    providers_config = {
-        "vertexai": {
-            "gateway_url": os.getenv("AGENTSEC_VERTEXAI_GATEWAY_URL"),
-            "gateway_api_key": os.getenv("AGENTSEC_VERTEXAI_GATEWAY_API_KEY"),
-        },
-        "google_genai": {
-            "gateway_url": os.getenv("AGENTSEC_GOOGLE_GENAI_GATEWAY_URL") or os.getenv("AGENTSEC_VERTEXAI_GATEWAY_URL"),
-            "gateway_api_key": os.getenv("AGENTSEC_GOOGLE_GENAI_GATEWAY_API_KEY") or os.getenv("AGENTSEC_VERTEXAI_GATEWAY_API_KEY"),
-        },
-    }
-    
     agentsec.protect(
         # AI Defense integration mode: "api" or "gateway"
         llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
         mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
         
-        # API mode configuration (LLM)
-        api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
-        api_mode_llm_endpoint=os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
-        api_mode_llm_api_key=os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
-        api_mode_fail_open_llm=True,
+        # API Mode Configuration
+        api_mode={
+            "llm": {
+                "mode": os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
+                "endpoint": os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
+                "api_key": os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
+            },
+            "mcp": {
+                "mode": os.getenv("AGENTSEC_API_MODE_MCP", "monitor"),
+                "endpoint": os.getenv("AI_DEFENSE_API_MODE_MCP_ENDPOINT"),
+                "api_key": os.getenv("AI_DEFENSE_API_MODE_MCP_API_KEY"),
+            },
+            "llm_defaults": {"fail_open": True},
+            "mcp_defaults": {"fail_open": True},
+        },
         
-        # API mode configuration (MCP)
-        api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "monitor"),
-        api_mode_mcp_endpoint=os.getenv("AI_DEFENSE_API_MODE_MCP_ENDPOINT"),
-        api_mode_mcp_api_key=os.getenv("AI_DEFENSE_API_MODE_MCP_API_KEY"),
-        api_mode_fail_open_mcp=True,
-        
-        # Gateway mode configuration (LLM)
-        providers=providers_config,
-        
-        # Gateway mode configuration (MCP)
-        gateway_mode_mcp_url=os.getenv("AGENTSEC_MCP_GATEWAY_URL"),
-        gateway_mode_mcp_api_key=os.getenv("AGENTSEC_MCP_GATEWAY_API_KEY"),
-        gateway_mode_fail_open_mcp=True,
+        # Gateway Mode Configuration (LLM)
+        gateway_mode={
+            "llm_gateways": {
+                "vertexai-default": {
+                    "gateway_url": os.getenv("AGENTSEC_VERTEXAI_GATEWAY_URL"),
+                    "gateway_api_key": os.getenv("AGENTSEC_VERTEXAI_GATEWAY_API_KEY"),
+                    "auth_mode": "google_adc",
+                    "provider": "vertexai",
+                    "default": True,
+                },
+                "google-genai-default": {
+                    "gateway_url": os.getenv("AGENTSEC_GOOGLE_GENAI_GATEWAY_URL") or os.getenv("AGENTSEC_VERTEXAI_GATEWAY_URL"),
+                    "gateway_api_key": os.getenv("AGENTSEC_GOOGLE_GENAI_GATEWAY_API_KEY") or os.getenv("AGENTSEC_VERTEXAI_GATEWAY_API_KEY"),
+                    "auth_mode": "google_adc",
+                    "provider": "google_genai",
+                    "default": True,
+                },
+            },
+            "mcp_gateways": {
+                os.getenv("MCP_SERVER_URL", ""): {
+                    "gateway_url": os.getenv("AGENTSEC_MCP_GATEWAY_URL"),
+                    "gateway_api_key": os.getenv("AGENTSEC_MCP_GATEWAY_API_KEY"),
+                },
+            },
+            "mcp_defaults": {"fail_open": True},
+        },
         
         # Disable auto .env loading since we did it manually
         auto_dotenv=False,
     )
     
-    print(f"[agentsec] SDK: {GOOGLE_AI_SDK} | LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'monitor')} | "
-          f"MCP: {os.getenv('AGENTSEC_API_MODE_MCP', 'monitor')} | "
-          f"Integration: LLM={os.getenv('AGENTSEC_LLM_INTEGRATION_MODE', 'api')}, MCP={os.getenv('AGENTSEC_MCP_INTEGRATION_MODE', 'api')} | "
-          f"Patched: {agentsec.get_patched_clients()}")
+    print(f"[agentsec] SDK: {GOOGLE_AI_SDK} | Patched: {agentsec.get_patched_clients()}")
     
     _agentsec_initialized = True
 

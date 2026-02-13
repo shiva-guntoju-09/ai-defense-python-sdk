@@ -33,16 +33,16 @@ class TestEnforceMode:
     """Tests for enforce mode behavior."""
 
     def test_enforce_mode_sets_correct_mode(self):
-        """Test that protect(api_mode_llm='enforce') sets mode correctly."""
+        """Test that protect(api_mode={"llm": {"mode": "enforce"}}) sets mode correctly."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_llm="enforce")
+            agentsec.protect(api_mode={"llm": {"mode": "enforce"}})
             assert get_llm_mode() == "enforce"
 
     def test_enforce_mode_with_allow_permits_request(self):
         """Test that enforce mode with allow response permits request."""
         with _mock_session_request({"action": "Allow", "reasons": [], "is_safe": True}):
             with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect(api_mode_llm="enforce", patch_clients=False)
+                agentsec.protect(api_mode={"llm": {"mode": "enforce"}}, patch_clients=False)
             from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
             inspector = LLMInspector(
                 api_key=TEST_API_KEY,
@@ -59,7 +59,7 @@ class TestEnforceMode:
         """Test that enforce mode with block response gives block decision."""
         with _mock_session_request({"action": "Block", "reasons": ["policy_violation"], "is_safe": False}):
             with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect(api_mode_llm="enforce", patch_clients=False)
+                agentsec.protect(api_mode={"llm": {"mode": "enforce"}}, patch_clients=False)
             from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
             inspector = LLMInspector(
                 api_key=TEST_API_KEY,
@@ -82,7 +82,7 @@ class TestEnforceMode:
             "explanation": "pii_removed",
         }):
             with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect(api_mode_llm="enforce", patch_clients=False)
+                agentsec.protect(api_mode={"llm": {"mode": "enforce"}}, patch_clients=False)
             from aidefense.runtime.agentsec.inspectors.api_llm import LLMInspector
             inspector = LLMInspector(
                 api_key=TEST_API_KEY,

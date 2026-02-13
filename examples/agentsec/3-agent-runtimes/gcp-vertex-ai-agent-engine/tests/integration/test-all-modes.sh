@@ -336,6 +336,9 @@ test_mcp_protection() {
     # Set the integration mode
     export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
     
+    # Enable debug logging so MCP inspection log lines are captured in the log file
+    export AGENTSEC_LOG_LEVEL="DEBUG"
+    
     # Run the test
     local start_time=$(date +%s)
     poetry run python "$test_script" > "$log_file" 2>&1
@@ -445,6 +448,7 @@ test_agent_engine() {
     
     # Set environment for this test
     export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
+    export AGENTSEC_LOG_LEVEL="DEBUG"
     export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:?Error: GOOGLE_CLOUD_PROJECT not set}"
     export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-us-central1}"
     export GOOGLE_GENAI_USE_VERTEXAI="True"
@@ -456,7 +460,7 @@ test_agent_engine() {
         
         # Run the agent engine app locally with tool-triggering prompt
         if poetry run python -c "
-import sys
+import sys, os
 sys.path.insert(0, '$PROJECT_DIR')
 from _shared.agent_factory import invoke_agent
 
@@ -472,7 +476,17 @@ assert len(result) > 0, 'Response should not be empty'
 
 # Test 2: Verify tool was called (should contain service health info)
 print('\\nTool execution verified - agent used check_service_health tool')
-print('Test passed!')
+print('[SUCCESS] LLM test passed!')
+
+# Test 3: Also exercise MCP tool protection
+if os.getenv('MCP_SERVER_URL'):
+    print('[test] Testing MCP tool protection...')
+    from _shared.mcp_tools import _sync_call_mcp_tool
+    mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+    print(f'[test] MCP Result: {mcp_result[:100]}...')
+    print('[MCP_SUCCESS] MCP tool call completed')
+else:
+    print('[test] MCP_SERVER_URL not set, skipping MCP test')
 " > "$log_file" 2>&1; then
             log_pass "Agent Engine test ($integration_mode mode) - local"
             
@@ -482,6 +496,14 @@ print('Test passed!')
             # Check for tool execution
             if grep -q "\[TOOL CALL\]" "$log_file"; then
                 log_info "✓ LangChain agent tool execution confirmed"
+            fi
+            
+            # Check for MCP protection
+            if grep -qi "MCP.*Request inspection\|MCP TOOL CALL.*fetch\|call_tool.*fetch.*Request" "$log_file"; then
+                log_info "✓ MCP Request protection: exercised"
+            fi
+            if grep -qi "MCP.*Response inspection\|call_tool.*Response.*allow\|Response decision" "$log_file"; then
+                log_info "✓ MCP Response protection: exercised"
             fi
             
             return 0
@@ -545,12 +567,29 @@ test_cloud_run() {
         log_info "Running local test (--local flag set)..."
         
         export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
+        export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
+        export AGENTSEC_LOG_LEVEL="DEBUG"
         export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:?Error: GOOGLE_CLOUD_PROJECT not set}"
         export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-us-central1}"
         export PYTHONPATH="$PROJECT_DIR"
         
         if "$PROJECT_DIR/cloud-run-deploy/scripts/invoke.sh" --local "Check the health of the payments service" > "$log_file" 2>&1; then
             log_pass "Cloud Run test ($integration_mode mode) - local"
+            
+            # Also exercise MCP tool protection
+            if [ -n "${MCP_SERVER_URL:-}" ]; then
+                cd "$PROJECT_DIR"
+                poetry run python -c "
+import sys, os
+sys.path.insert(0, '$PROJECT_DIR')
+from _shared.mcp_tools import _sync_call_mcp_tool
+print('[test] Testing MCP tool protection...')
+mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+print(f'[test] MCP Result: {mcp_result[:100]}...')
+print('[MCP_SUCCESS] MCP tool call completed')
+" >> "$log_file" 2>&1 || true
+            fi
+            
             return 0
         else
             log_fail "Cloud Run test ($integration_mode mode) - local - see $log_file"
@@ -693,12 +732,29 @@ test_gke() {
         log_info "Running local test (--local flag set)..."
         
         export AGENTSEC_LLM_INTEGRATION_MODE="$integration_mode"
+        export AGENTSEC_MCP_INTEGRATION_MODE="$integration_mode"
+        export AGENTSEC_LOG_LEVEL="DEBUG"
         export GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:?Error: GOOGLE_CLOUD_PROJECT not set}"
         export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-us-central1}"
         export PYTHONPATH="$PROJECT_DIR"
         
         if "$PROJECT_DIR/gke-deploy/scripts/invoke.sh" --local "Check the health of the auth service" > "$log_file" 2>&1; then
             log_pass "GKE test ($integration_mode mode) - local"
+            
+            # Also exercise MCP tool protection
+            if [ -n "${MCP_SERVER_URL:-}" ]; then
+                cd "$PROJECT_DIR"
+                poetry run python -c "
+import sys, os
+sys.path.insert(0, '$PROJECT_DIR')
+from _shared.mcp_tools import _sync_call_mcp_tool
+print('[test] Testing MCP tool protection...')
+mcp_result = _sync_call_mcp_tool('fetch', {'url': 'https://example.com'})
+print(f'[test] MCP Result: {mcp_result[:100]}...')
+print('[MCP_SUCCESS] MCP tool call completed')
+" >> "$log_file" 2>&1 || true
+            fi
+            
             return 0
         else
             log_fail "GKE test ($integration_mode mode) - local - see $log_file"

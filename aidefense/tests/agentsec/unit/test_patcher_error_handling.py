@@ -35,7 +35,7 @@ class TestOpenAIPatcherErrorHandling:
                     mock_ctx.return_value.metadata = {}
                     with patch("aidefense.runtime.agentsec.patchers.openai._state") as mock_state:
                         mock_state.get_llm_mode.return_value = "monitor"
-                        mock_state.get_config.return_value = MagicMock(llm_fail_open=True)
+                        mock_state.get_api_llm_fail_open.return_value = True
                         
                         # Should not raise, should allow the call
                         result = _wrap_chat_completions_create(

@@ -23,15 +23,15 @@ class TestMCPOffMode:
     """Tests for MCP off mode behavior."""
 
     def test_off_mode_sets_correct_mode(self):
-        """Test that protect(api_mode_mcp='off') sets mode correctly."""
+        """Test that protect(api_mode={"mcp": {"mode": "off"}}) sets mode correctly."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="off")
+            agentsec.protect(api_mode={"mcp": {"mode": "off"}})
             assert get_mcp_mode() == "off"
 
     def test_off_mode_should_not_inspect(self):
         """Test that off mode causes _should_inspect to return False."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="off")
+            agentsec.protect(api_mode={"mcp": {"mode": "off"}})
         
         from aidefense.runtime.agentsec.patchers.mcp import _should_inspect
         assert _should_inspect() is False
@@ -39,7 +39,7 @@ class TestMCPOffMode:
     def test_off_mode_skips_inspection(self):
         """Test that off mode completely skips MCP inspection."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="off")
+            agentsec.protect(api_mode={"mcp": {"mode": "off"}})
         
         # Create a mock MCPInspector
         from aidefense.runtime.agentsec.inspectors.api_mcp import MCPInspector
@@ -58,15 +58,15 @@ class TestMCPMonitorMode:
     """Tests for MCP monitor mode behavior."""
 
     def test_monitor_mode_sets_correct_mode(self):
-        """Test that protect(api_mode_mcp='monitor') sets mode correctly."""
+        """Test that protect(api_mode={"mcp": {"mode": "monitor"}}) sets mode correctly."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="monitor")
+            agentsec.protect(api_mode={"mcp": {"mode": "monitor"}})
             assert get_mcp_mode() == "monitor"
 
     def test_monitor_mode_should_inspect(self):
         """Test that monitor mode causes _should_inspect to return True."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="monitor")
+            agentsec.protect(api_mode={"mcp": {"mode": "monitor"}})
         
         from aidefense.runtime.agentsec.patchers.mcp import _should_inspect
         assert _should_inspect() is True
@@ -74,7 +74,7 @@ class TestMCPMonitorMode:
     def test_monitor_mode_does_not_enforce_block(self):
         """Test that monitor mode does not enforce block decisions."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="monitor")
+            agentsec.protect(api_mode={"mcp": {"mode": "monitor"}})
         
         from aidefense.runtime.agentsec.patchers.mcp import _enforce_decision
         from aidefense.runtime.agentsec.decision import Decision
@@ -88,7 +88,7 @@ class TestMCPMonitorMode:
     def test_monitor_mode_inspects_but_does_not_block(self):
         """Test that monitor mode inspects MCP calls but does not block."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="monitor", patch_clients=False)
+            agentsec.protect(api_mode={"mcp": {"mode": "monitor"}}, patch_clients=False)
         
         from aidefense.runtime.agentsec.decision import Decision
         from aidefense.runtime.agentsec.patchers.mcp import _enforce_decision
@@ -107,15 +107,15 @@ class TestMCPEnforceMode:
     """Tests for MCP enforce mode behavior."""
 
     def test_enforce_mode_sets_correct_mode(self):
-        """Test that protect(api_mode_mcp='enforce') sets mode correctly."""
+        """Test that protect(api_mode={"mcp": {"mode": "enforce"}}) sets mode correctly."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="enforce")
+            agentsec.protect(api_mode={"mcp": {"mode": "enforce"}})
             assert get_mcp_mode() == "enforce"
 
     def test_enforce_mode_should_inspect(self):
         """Test that enforce mode causes _should_inspect to return True."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="enforce")
+            agentsec.protect(api_mode={"mcp": {"mode": "enforce"}})
         
         from aidefense.runtime.agentsec.patchers.mcp import _should_inspect
         assert _should_inspect() is True
@@ -123,7 +123,7 @@ class TestMCPEnforceMode:
     def test_enforce_mode_enforces_block(self):
         """Test that enforce mode enforces block decisions."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="enforce")
+            agentsec.protect(api_mode={"mcp": {"mode": "enforce"}})
         
         from aidefense.runtime.agentsec.patchers.mcp import _enforce_decision
         from aidefense.runtime.agentsec.decision import Decision
@@ -140,7 +140,7 @@ class TestMCPEnforceMode:
     def test_enforce_mode_allows_allow_decisions(self):
         """Test that enforce mode does not raise for allow decisions."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="enforce")
+            agentsec.protect(api_mode={"mcp": {"mode": "enforce"}})
         
         from aidefense.runtime.agentsec.patchers.mcp import _enforce_decision
         from aidefense.runtime.agentsec.decision import Decision
@@ -154,7 +154,7 @@ class TestMCPEnforceMode:
     def test_enforce_mode_with_allow_permits_request(self):
         """Test that enforce mode with allow response permits request."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="enforce", patch_clients=False)
+            agentsec.protect(api_mode={"mcp": {"mode": "enforce"}}, patch_clients=False)
         
         from aidefense.runtime.agentsec.decision import Decision
         from aidefense.runtime.agentsec.patchers.mcp import _enforce_decision
@@ -171,7 +171,7 @@ class TestMCPEnforceMode:
     def test_enforce_mode_with_block_raises_error(self):
         """Test that enforce mode with block response raises SecurityPolicyError."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_mcp="enforce", patch_clients=False)
+            agentsec.protect(api_mode={"mcp": {"mode": "enforce"}}, patch_clients=False)
         
         from aidefense.runtime.agentsec.decision import Decision
         from aidefense.runtime.agentsec.patchers.mcp import _enforce_decision
@@ -188,45 +188,13 @@ class TestMCPEnforceMode:
         assert exc_info.value.decision.action == "block"
 
 
-class TestMCPModeEnvVars:
-    """Tests for MCP mode via environment variables."""
-
-    def test_env_var_sets_mcp_mode_off(self):
-        """Test AGENTSEC_API_MODE_MCP=off sets correct mode."""
-        with patch.dict("os.environ", {"AGENTSEC_API_MODE_MCP": "off"}, clear=False):
-            with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect()
-                assert get_mcp_mode() == "off"
-
-    def test_env_var_sets_mcp_mode_monitor(self):
-        """Test AGENTSEC_API_MODE_MCP=monitor sets correct mode."""
-        with patch.dict("os.environ", {"AGENTSEC_API_MODE_MCP": "monitor"}, clear=False):
-            with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect()
-                assert get_mcp_mode() == "monitor"
-
-    def test_env_var_sets_mcp_mode_enforce(self):
-        """Test AGENTSEC_API_MODE_MCP=enforce sets correct mode."""
-        with patch.dict("os.environ", {"AGENTSEC_API_MODE_MCP": "enforce"}, clear=False):
-            with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect()
-                assert get_mcp_mode() == "enforce"
-
-    def test_explicit_param_overrides_env_var(self):
-        """Test explicit mcp_mode parameter overrides environment variable."""
-        with patch.dict("os.environ", {"AGENTSEC_API_MODE_MCP": "off"}, clear=False):
-            with patch("aidefense.runtime.agentsec._apply_patches"):
-                agentsec.protect(api_mode_mcp="enforce")
-                assert get_mcp_mode() == "enforce"
-
-
 class TestMCPModeAndLLMModeCombinations:
     """Tests for combining MCP and LLM modes."""
 
     def test_independent_mcp_and_llm_modes(self):
         """Test that MCP and LLM modes are independent."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_llm="enforce", api_mode_mcp="monitor")
+            agentsec.protect(api_mode={"llm": {"mode": "enforce"}, "mcp": {"mode": "monitor"}})
             
             from aidefense.runtime.agentsec._state import get_llm_mode, get_mcp_mode
             assert get_llm_mode() == "enforce"
@@ -235,7 +203,7 @@ class TestMCPModeAndLLMModeCombinations:
     def test_llm_enforce_mcp_off(self):
         """Test LLM enforce with MCP off."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_llm="enforce", api_mode_mcp="off")
+            agentsec.protect(api_mode={"llm": {"mode": "enforce"}, "mcp": {"mode": "off"}})
             
             from aidefense.runtime.agentsec._state import get_llm_mode, get_mcp_mode
             from aidefense.runtime.agentsec.patchers.mcp import _should_inspect
@@ -247,7 +215,7 @@ class TestMCPModeAndLLMModeCombinations:
     def test_llm_off_mcp_enforce(self):
         """Test LLM off with MCP enforce."""
         with patch("aidefense.runtime.agentsec._apply_patches"):
-            agentsec.protect(api_mode_llm="off", api_mode_mcp="enforce")
+            agentsec.protect(api_mode={"llm": {"mode": "off"}, "mcp": {"mode": "enforce"}})
             
             from aidefense.runtime.agentsec._state import get_llm_mode, get_mcp_mode
             from aidefense.runtime.agentsec.patchers.mcp import _should_inspect

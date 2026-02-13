@@ -31,7 +31,7 @@ from ..exceptions import SecurityPolicyError
 from ..inspectors.api_llm import LLMInspector
 from ..inspectors.gateway_llm import GatewayClient
 from . import is_patched, mark_patched
-from ._base import safe_import
+from ._base import safe_import, resolve_gateway_settings
 
 logger = logging.getLogger("aidefense.runtime.agentsec.patchers.openai")
 
@@ -58,18 +58,13 @@ def _get_inspector() -> LLMInspector:
                 if not _state.is_initialized():
                     logger.warning("agentsec.protect() not called, using default config")
                 _inspector = LLMInspector(
-                    fail_open=_state.get_api_mode_fail_open_llm(),
+                    fail_open=_state.get_api_llm_fail_open(),
                     default_rules=_state.get_llm_rules(),
                 )
                 # Register for cleanup on shutdown
                 from ..inspectors import register_inspector_for_cleanup
                 register_inspector_for_cleanup(_inspector)
     return _inspector
-
-
-def _is_gateway_mode() -> bool:
-    """Check if LLM integration mode is 'gateway'."""
-    return _state.get_llm_integration_mode() == "gateway"
 
 
 def _detect_provider(instance) -> str:
@@ -181,24 +176,6 @@ def _get_azure_deployment_name(instance, kwargs: Dict[str, Any]) -> Optional[str
         logger.debug(f"Error extracting Azure deployment name: {e}")
     
     return None
-
-
-def _should_use_gateway(provider: str = "openai") -> bool:
-    """
-    Check if we should use gateway mode (gateway mode enabled, configured, and not skipped).
-    
-    Args:
-        provider: Provider name - "openai" or "azure_openai"
-    """
-    from .._context import is_llm_skip_active
-    if is_llm_skip_active():
-        return False
-    if not _is_gateway_mode():
-        return False
-    # Check if gateway is properly configured for this provider
-    gateway_url = _state.get_provider_gateway_url(provider)
-    gateway_api_key = _state.get_provider_gateway_api_key(provider)
-    return bool(gateway_url and gateway_api_key)
 
 
 def _normalize_messages(messages: Any) -> List[Dict[str, Any]]:
@@ -477,7 +454,7 @@ def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision
     Returns:
         Decision.allow() if fail_open=True, raises SecurityPolicyError otherwise
     """
-    fail_open = _state.get_api_mode_fail_open_llm()
+    fail_open = _state.get_api_llm_fail_open()
     
     error_type = type(error).__name__
     logger.warning(f"[{operation}] Inspection error: {error_type}: {error}")
@@ -531,9 +508,10 @@ def _wrap_chat_completions_create(wrapped, instance, args, kwargs):
     logger.debug(f"╚══════════════════════════════════════════════════════════════")
     
     # Gateway mode: route through AI Defense Gateway
-    if _should_use_gateway(provider):
+    gw_settings = resolve_gateway_settings(provider)
+    if gw_settings:
         logger.debug(f"[PATCHED CALL] Gateway mode ({provider}) - routing to AI Defense Gateway")
-        return _handle_gateway_call_sync(kwargs, stream, normalized, metadata, provider, azure_api_version, azure_deployment_name)
+        return _handle_gateway_call_sync(kwargs, stream, normalized, metadata, provider, gw_settings, azure_api_version, azure_deployment_name)
     
     # API mode (default): use LLMInspector for inspection
     # Pre-call inspection with error handling
@@ -585,37 +563,17 @@ def _wrap_chat_completions_create(wrapped, instance, args, kwargs):
     return response
 
 
-def _handle_gateway_call_sync(kwargs: Dict[str, Any], stream: bool, normalized: List[Dict], metadata: Dict, provider: str = "openai", azure_api_version: Optional[str] = None, azure_deployment_name: Optional[str] = None) -> Any:
+def _handle_gateway_call_sync(kwargs: Dict[str, Any], stream: bool, normalized: List[Dict], metadata: Dict, provider: str = "openai", gw_settings=None, azure_api_version: Optional[str] = None, azure_deployment_name: Optional[str] = None) -> Any:
     """
     Handle synchronous gateway call.
     
     Routes the request through provider-specific AI Defense Gateway, which handles 
     inspection and proxying to the actual LLM provider.
-    
-    Args:
-        kwargs: Original call kwargs (model, messages, etc.)
-        stream: Whether streaming is requested
-        normalized: Normalized messages for context
-        metadata: Inspection metadata
-        provider: Provider name - "openai" or "azure_openai"
-        azure_api_version: Azure OpenAI API version (only for azure_openai provider)
-        azure_deployment_name: Azure deployment name (only for azure_openai provider)
-        
-    Returns:
-        Response from gateway (same format as OpenAI response)
     """
     import httpx
     
-    gateway_url = _state.get_provider_gateway_url(provider)
-    gateway_api_key = _state.get_provider_gateway_api_key(provider)
-    
-    if not gateway_url or not gateway_api_key:
-        logger.warning(f"Gateway mode enabled but {provider} gateway not configured")
-        set_inspection_context(decision=Decision.allow(reasons=[f"{provider} gateway not configured"]), done=True)
-        raise SecurityPolicyError(
-            Decision.block(reasons=[f"{provider} gateway not configured"]),
-            f"Gateway mode enabled but AGENTSEC_{provider.upper()}_GATEWAY_URL not set"
-        )
+    gateway_url = gw_settings.url
+    gateway_api_key = gw_settings.api_key
     
     # Build request body (OpenAI-compatible format)
     request_body = {
@@ -654,7 +612,7 @@ def _handle_gateway_call_sync(kwargs: Dict[str, Any], stream: bool, normalized: 
                 full_url = full_url + '/v1/chat/completions'
         
         logger.debug(f"[GATEWAY] Sending request to {provider} gateway: {full_url}")
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=float(gw_settings.timeout)) as client:
             response = client.post(
                 full_url,
                 json=request_body,
@@ -680,14 +638,11 @@ def _handle_gateway_call_sync(kwargs: Dict[str, Any], stream: bool, normalized: 
         
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
-            # fail_open=True: allow request to proceed by re-raising original error
-            # (let calling code handle the HTTP error naturally)
+        if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original HTTP error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
-            raise  # Re-raise original HTTP error, not SecurityPolicyError
+            raise
         else:
-            # fail_open=False: block the request with SecurityPolicyError
             raise SecurityPolicyError(
                 Decision.block(reasons=["Gateway unavailable"]),
                 f"Gateway HTTP error: {e}"
@@ -696,10 +651,10 @@ def _handle_gateway_call_sync(kwargs: Dict[str, Any], stream: bool, normalized: 
         raise
     except Exception as e:
         logger.error(f"[GATEWAY] Error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
-            raise  # Re-raise original error
+            raise
         raise
 
 
@@ -857,9 +812,10 @@ async def _wrap_chat_completions_create_async(wrapped, instance, args, kwargs):
     logger.debug(f"╚══════════════════════════════════════════════════════════════")
     
     # Gateway mode: route through AI Defense Gateway
-    if _should_use_gateway(provider):
+    gw_settings = resolve_gateway_settings(provider)
+    if gw_settings:
         logger.debug(f"[PATCHED CALL] Gateway mode (async, {provider}) - routing to AI Defense Gateway")
-        return await _handle_gateway_call_async(kwargs, stream, normalized, metadata, provider, azure_api_version, azure_deployment_name)
+        return await _handle_gateway_call_async(kwargs, stream, normalized, metadata, provider, gw_settings, azure_api_version, azure_deployment_name)
     
     # API mode (default): use LLMInspector for inspection
     # Pre-call inspection with error handling
@@ -908,36 +864,12 @@ async def _wrap_chat_completions_create_async(wrapped, instance, args, kwargs):
     return response
 
 
-async def _handle_gateway_call_async(kwargs: Dict[str, Any], stream: bool, normalized: List[Dict], metadata: Dict, provider: str = "openai", azure_api_version: Optional[str] = None, azure_deployment_name: Optional[str] = None) -> Any:
-    """
-    Handle asynchronous gateway call.
-    
-    Routes the request through provider-specific AI Defense Gateway, which handles 
-    inspection and proxying to the actual LLM provider.
-    
-    Args:
-        kwargs: Original call kwargs (model, messages, etc.)
-        stream: Whether streaming is requested
-        normalized: Normalized messages for context
-        metadata: Inspection metadata
-        provider: Provider name - "openai" or "azure_openai"
-        azure_api_version: Azure OpenAI API version (only for azure_openai provider)
-        azure_deployment_name: Azure deployment name (only for azure_openai provider)
-        
-    Returns:
-        Response from gateway (same format as OpenAI response)
-    """
+async def _handle_gateway_call_async(kwargs: Dict[str, Any], stream: bool, normalized: List[Dict], metadata: Dict, provider: str = "openai", gw_settings=None, azure_api_version: Optional[str] = None, azure_deployment_name: Optional[str] = None) -> Any:
+    """Handle asynchronous gateway call."""
     import httpx
     
-    gateway_url = _state.get_provider_gateway_url(provider)
-    gateway_api_key = _state.get_provider_gateway_api_key(provider)
-    
-    if not gateway_url or not gateway_api_key:
-        logger.warning(f"Gateway mode enabled but {provider} gateway not configured")
-        raise SecurityPolicyError(
-            Decision.block(reasons=[f"{provider} gateway not configured"]),
-            f"Gateway mode enabled but AGENTSEC_{provider.upper()}_GATEWAY_URL not set"
-        )
+    gateway_url = gw_settings.url
+    gateway_api_key = gw_settings.api_key
     
     # Build request body (OpenAI-compatible format)
     request_body = {
@@ -976,7 +908,7 @@ async def _handle_gateway_call_async(kwargs: Dict[str, Any], stream: bool, norma
                 full_url = full_url + '/v1/chat/completions'
         
         logger.debug(f"[GATEWAY] Sending async request to {provider} gateway: {full_url}")
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=float(gw_settings.timeout)) as client:
             response = await client.post(
                 full_url,
                 json=request_body,
@@ -1003,13 +935,11 @@ async def _handle_gateway_call_async(kwargs: Dict[str, Any], stream: bool, norma
         
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
-            # fail_open=True: allow request to proceed by re-raising original error
+        if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original HTTP error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
-            raise  # Re-raise original HTTP error, not SecurityPolicyError
+            raise
         else:
-            # fail_open=False: block the request with SecurityPolicyError
             raise SecurityPolicyError(
                 Decision.block(reasons=["Gateway unavailable"]),
                 f"Gateway HTTP error: {e}"
@@ -1018,10 +948,10 @@ async def _handle_gateway_call_async(kwargs: Dict[str, Any], stream: bool, norma
         raise
     except Exception as e:
         logger.error(f"[GATEWAY] Async error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
-            raise  # Re-raise original error
+            raise
         raise
 
 

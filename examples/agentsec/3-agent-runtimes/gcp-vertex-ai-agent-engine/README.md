@@ -185,25 +185,25 @@ gcp-vertex-ai-agent-engine/
 The `_shared/agent_factory.py` module calls `agentsec.protect()` **before** importing any AI library:
 
 ```python
-# Enable nested event loops (for sync tool calling async MCP)
-import nest_asyncio
-nest_asyncio.apply()
-
 # Configure AI Defense protection BEFORE importing AI libraries
-import agentsec
+from aidefense.runtime import agentsec
 
 agentsec.protect(
-    # LLM Protection
     llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
-    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
-    
-    # MCP Protection
     mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
-    api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "monitor"),
-    
-    providers={
-        "vertexai": {
-            "gateway_url": os.getenv("AGENTSEC_VERTEXAI_GATEWAY_URL"),
+    api_mode={
+        "llm": {"mode": os.getenv("AGENTSEC_API_MODE_LLM", "monitor")},
+        "mcp": {"mode": os.getenv("AGENTSEC_API_MODE_MCP", "monitor")},
+        "llm_defaults": {"fail_open": True},
+    },
+    gateway_mode={
+        "llm_gateways": {
+            "vertexai-default": {
+                "gateway_url": os.getenv("AGENTSEC_VERTEXAI_GATEWAY_URL"),
+                "auth_mode": "google_adc",
+                "provider": "vertexai",
+                "default": True,
+            },
         },
     },
 )

@@ -43,19 +43,21 @@ if shared_env.exists():
 # MINIMAL agentsec integration: Just 2 lines!
 # =============================================================================
 from aidefense.runtime import agentsec
-agentsec.protect()  # Reads config from .env, patches clients
+config_path = str(Path(__file__).parent.parent.parent / "agentsec.yaml")
+# Allow integration test script to override YAML integration mode via env vars
+agentsec.protect(
+    config=config_path,
+    llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE"),
+    mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE"),
+)
 
 # That's it! Now import your frameworks normally
 #
-# Alternative: Configure Gateway mode programmatically (provider-specific):
-#   agentsec.protect(
-#       llm_integration_mode="gateway",
-#       providers={"openai": {"gateway_url": "https://gateway.../conn", "gateway_api_key": "key"}},
-#       auto_dotenv=False,
-#   )
+# Alternative: Configure inline (for quick testing):
+#   agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
 from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
 
-print(f"[agentsec] LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'monitor')} | Integration: {os.getenv('AGENTSEC_LLM_INTEGRATION_MODE', 'api')} | Patched: {agentsec.get_patched_clients()}")
+print(f"[agentsec] Patched: {agentsec.get_patched_clients()}")
 
 # =============================================================================
 # Import shared provider infrastructure
@@ -246,15 +248,18 @@ def create_tasks(researcher, writer):
     """
     logger.debug("Creating reusable tasks with input placeholders")
     
-    # Research task - uses {question} placeholder for input interpolation
+    # Research task - uses {question} and {fetched_content} placeholders for input interpolation
     research_task = Task(
-        description="""Analyze the following question and any fetched URL content:
-        
-        Question: {question}
-        
-        Provide accurate technical information based on the fetched content.
-        Focus on extracting specific details that answer the question.""",
-        expected_output="Detailed technical information answering the question",
+        description="""Analyze the following question and the fetched URL content provided below.
+
+Question: {question}
+
+Fetched URL Content:
+{fetched_content}
+
+Based on the fetched content above, provide accurate technical information that answers the question.
+Focus on extracting specific details from the actual content.""",
+        expected_output="Detailed technical information answering the question based on the fetched content",
         agent=researcher,
     )
     
@@ -360,10 +365,13 @@ async def run_crew(initial_message: str = None):
             else:
                 research = "No MCP connection available."
             
-            # Run crew with question input (reuses crew instance)
+            # Run crew with question and fetched content as inputs
             logger.debug("Running crew")
             start = time.time()
-            result = crew.kickoff(inputs={"question": initial_message})
+            result = crew.kickoff(inputs={
+                "question": initial_message,
+                "fetched_content": research,
+            })
             elapsed = time.time() - start
             logger.debug(f"Crew completed in {elapsed:.1f}s")
             
@@ -397,9 +405,14 @@ async def run_crew(initial_message: str = None):
                 # Get research first
                 if _mcp_url:
                     research = do_mcp_research(user_input)
+                else:
+                    research = "No MCP connection available."
                 
-                # Run crew with question input (reuses crew instance)
-                result = crew.kickoff(inputs={"question": user_input})
+                # Run crew with question and fetched content
+                result = crew.kickoff(inputs={
+                    "question": user_input,
+                    "fetched_content": research,
+                })
                 print(f"\nAnswer: {result}\n", flush=True)
                 
             except SecurityPolicyError as e:

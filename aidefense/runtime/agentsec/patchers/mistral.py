@@ -36,7 +36,7 @@ from ..decision import Decision
 from ..exceptions import SecurityPolicyError
 from ..inspectors.api_llm import LLMInspector
 from . import is_patched, mark_patched
-from ._base import safe_import
+from ._base import safe_import, resolve_gateway_settings
 
 logger = logging.getLogger("aidefense.runtime.agentsec.patchers.mistral")
 
@@ -54,7 +54,7 @@ def _get_inspector() -> LLMInspector:
                 if not _state.is_initialized():
                     logger.warning("agentsec.protect() not called, using default config")
                 _inspector = LLMInspector(
-                    fail_open=_state.get_api_mode_fail_open_llm(),
+                    fail_open=_state.get_api_llm_fail_open(),
                     default_rules=_state.get_llm_rules(),
                 )
                 from ..inspectors import register_inspector_for_cleanup
@@ -123,7 +123,7 @@ def _enforce_decision(decision: Decision) -> None:
 
 
 def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision]:
-    fail_open = _state.get_api_mode_fail_open_llm()
+    fail_open = _state.get_api_llm_fail_open()
     logger.warning(f"[{operation}] Inspection error: {type(error).__name__}: {error}")
     if fail_open:
         logger.warning("llm_fail_open=True, allowing request despite inspection error")
@@ -133,21 +133,6 @@ def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision
         Decision.block(reasons=[f"Inspection error: {type(error).__name__}: {error}"]),
         f"Inspection failed and fail_open=False: {error}",
     )
-
-
-def _is_gateway_mode() -> bool:
-    return _state.get_llm_integration_mode() == "gateway"
-
-
-def _should_use_gateway() -> bool:
-    from .._context import is_llm_skip_active
-    if is_llm_skip_active():
-        return False
-    if not _is_gateway_mode():
-        return False
-    gateway_url = _state.get_provider_gateway_url("mistral")
-    gateway_api_key = _state.get_provider_gateway_api_key("mistral")
-    return bool(gateway_url and gateway_api_key)
 
 
 def _serialize_messages_for_gateway(messages: Any) -> List[Dict[str, Any]]:
@@ -178,17 +163,18 @@ def _handle_gateway_call_sync(
     normalized: List[Dict[str, Any]],
     metadata: Dict[str, Any],
     stream: bool,
+    gw_settings: Any,
 ) -> Any:
     """Route Mistral chat request through AI Defense Gateway (sync)."""
     import httpx
-    gateway_url = _state.get_provider_gateway_url("mistral")
-    gateway_api_key = _state.get_provider_gateway_api_key("mistral")
+    gateway_url = gw_settings.url
+    gateway_api_key = gw_settings.api_key
     if not gateway_url or not gateway_api_key:
         logger.warning("Gateway mode enabled but Mistral gateway not configured")
         set_inspection_context(decision=Decision.allow(reasons=["Mistral gateway not configured"]), done=True)
         raise SecurityPolicyError(
             Decision.block(reasons=["Mistral gateway not configured"]),
-            "Gateway mode enabled but AGENTSEC_MISTRAL_GATEWAY_URL not set",
+            "Gateway mode enabled but Mistral gateway not configured (check gateway_mode.llm_gateways for a mistral provider entry in config)",
         )
     request_body = {
         "model": kwargs.get("model"),
@@ -201,7 +187,7 @@ def _handle_gateway_call_sync(
     if "/chat/completions" not in full_url:
         full_url = f"{full_url}/v1/chat/completions"
     try:
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=float(gw_settings.timeout)) as client:
             response = client.post(
                 full_url,
                 json=request_body,
@@ -219,7 +205,7 @@ def _handle_gateway_call_sync(
         return obj
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] Mistral HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise
         raise SecurityPolicyError(Decision.block(reasons=["Gateway unavailable"]), f"Gateway HTTP error: {e}")
@@ -227,7 +213,7 @@ def _handle_gateway_call_sync(
         raise
     except Exception as e:
         logger.error(f"[GATEWAY] Mistral error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise
         raise
@@ -238,16 +224,17 @@ async def _handle_gateway_call_async(
     normalized: List[Dict[str, Any]],
     metadata: Dict[str, Any],
     stream: bool,
+    gw_settings: Any,
 ) -> Any:
     """Route Mistral chat request through AI Defense Gateway (async)."""
     import httpx
-    gateway_url = _state.get_provider_gateway_url("mistral")
-    gateway_api_key = _state.get_provider_gateway_api_key("mistral")
+    gateway_url = gw_settings.url
+    gateway_api_key = gw_settings.api_key
     if not gateway_url or not gateway_api_key:
         logger.warning("Gateway mode enabled but Mistral gateway not configured")
         raise SecurityPolicyError(
             Decision.block(reasons=["Mistral gateway not configured"]),
-            "Gateway mode enabled but AGENTSEC_MISTRAL_GATEWAY_URL not set",
+            "Gateway mode enabled but Mistral gateway not configured (check gateway_mode.llm_gateways for a mistral provider entry in config)",
         )
     request_body = {
         "model": kwargs.get("model"),
@@ -260,7 +247,7 @@ async def _handle_gateway_call_async(
     if "/chat/completions" not in full_url:
         full_url = f"{full_url}/v1/chat/completions"
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=float(gw_settings.timeout)) as client:
             response = await client.post(
                 full_url,
                 json=request_body,
@@ -278,7 +265,7 @@ async def _handle_gateway_call_async(
         return obj
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] Mistral async HTTP error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise
         raise SecurityPolicyError(Decision.block(reasons=["Gateway unavailable"]), f"Gateway HTTP error: {e}")
@@ -286,7 +273,7 @@ async def _handle_gateway_call_async(
         raise
     except Exception as e:
         logger.error(f"[GATEWAY] Mistral async error: {e}")
-        if _state.get_gateway_mode_fail_open_llm():
+        if gw_settings.fail_open:
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
             raise
         raise
@@ -446,9 +433,10 @@ def _wrap_complete(wrapped, instance, args, kwargs):
     metadata = get_inspection_context().metadata
     stream = kwargs.get("stream", False)
 
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("mistral")
+    if gw_settings:
         logger.debug("[PATCHED] Mistral Chat.complete gateway mode - routing to AI Defense Gateway")
-        return _handle_gateway_call_sync(kwargs, normalized, metadata, stream)
+        return _handle_gateway_call_sync(kwargs, normalized, metadata, stream, gw_settings)
 
     logger.debug(f"[PATCHED] Mistral Chat.complete model={model} messages={len(normalized)}")
     try:
@@ -492,9 +480,10 @@ def _wrap_stream(wrapped, instance, args, kwargs):
     normalized = _normalize_messages(messages)
     metadata = get_inspection_context().metadata
 
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("mistral")
+    if gw_settings:
         logger.debug("[PATCHED] Mistral Chat.stream gateway mode - full response as single chunk")
-        return _handle_gateway_call_sync({**kwargs, "stream": True}, normalized, metadata, stream=True)
+        return _handle_gateway_call_sync({**kwargs, "stream": True}, normalized, metadata, True, gw_settings)
 
     logger.debug(f"[PATCHED] Mistral Chat.stream model={model} messages={len(normalized)}")
     try:
@@ -523,9 +512,10 @@ async def _wrap_complete_async(wrapped, instance, args, kwargs):
     metadata = get_inspection_context().metadata
     stream = kwargs.get("stream", False)
 
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("mistral")
+    if gw_settings:
         logger.debug("[PATCHED] Mistral Chat.complete_async gateway mode - routing to AI Defense Gateway")
-        return await _handle_gateway_call_async(kwargs, normalized, metadata, stream)
+        return await _handle_gateway_call_async(kwargs, normalized, metadata, stream, gw_settings)
 
     logger.debug(f"[PATCHED] Mistral Chat.complete_async model={model} messages={len(normalized)}")
     try:
@@ -569,9 +559,10 @@ async def _wrap_stream_async(wrapped, instance, args, kwargs):
     normalized = _normalize_messages(messages)
     metadata = get_inspection_context().metadata
 
-    if _should_use_gateway():
+    gw_settings = resolve_gateway_settings("mistral")
+    if gw_settings:
         logger.debug("[PATCHED] Mistral Chat.stream_async gateway mode - full response as single chunk")
-        return await _handle_gateway_call_async({**kwargs, "stream": True}, normalized, metadata, stream=True)
+        return await _handle_gateway_call_async({**kwargs, "stream": True}, normalized, metadata, True, gw_settings)
 
     logger.debug(f"[PATCHED] Mistral Chat.stream_async model={model} messages={len(normalized)}")
     try:

@@ -42,19 +42,21 @@ if shared_env.exists():
 # MINIMAL agentsec integration: Just 2 lines!
 # =============================================================================
 from aidefense.runtime import agentsec
-agentsec.protect()  # Reads config from .env, patches clients
+config_path = str(Path(__file__).parent.parent.parent / "agentsec.yaml")
+# Allow integration test script to override YAML integration mode via env vars
+agentsec.protect(
+    config=config_path,
+    llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE"),
+    mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE"),
+)
 
 # That's it! Now import your frameworks normally
 #
-# Alternative: Configure Gateway mode programmatically (provider-specific):
-#   agentsec.protect(
-#       llm_integration_mode="gateway",
-#       providers={"openai": {"gateway_url": "https://gateway.../conn", "gateway_api_key": "key"}},
-#       auto_dotenv=False,
-#   )
+# Alternative: Configure inline (for quick testing):
+#   agentsec.protect(api_mode={"llm": {"mode": "monitor"}})
 from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
 
-print(f"[agentsec] LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'monitor')} | Integration: {os.getenv('AGENTSEC_LLM_INTEGRATION_MODE', 'api')} | Patched: {agentsec.get_patched_clients()}")
+print(f"[agentsec] Patched: {agentsec.get_patched_clients()}")
 
 # =============================================================================
 # Import shared provider infrastructure
@@ -216,15 +218,12 @@ async def run_agent(initial_message: str = None):
     # System prompt for fetch tool
     system_prompt = """You are a helpful assistant with access to the fetch_url tool.
 
-Your primary function is to retrieve web content when users ask about URLs.
+CRITICAL INSTRUCTIONS:
+1. When a user asks you to fetch a URL or asks about a webpage, you MUST use the fetch_url tool.
+2. ALWAYS use the tool to get actual content rather than guessing what a page contains.
+3. After fetching, summarize what you found for the user.
 
-When a user asks you to fetch a URL or asks about a webpage:
-1. Use the fetch_url tool to retrieve the content
-2. Summarize what you found for the user
-
-The fetch_url tool accepts a URL parameter: fetch_url(url='https://example.com')
-
-Always use the tool to get actual content rather than guessing what a page contains.
+Tool usage: fetch_url(url='https://example.com')
 """
     
     logger.debug("Creating Agent instance")

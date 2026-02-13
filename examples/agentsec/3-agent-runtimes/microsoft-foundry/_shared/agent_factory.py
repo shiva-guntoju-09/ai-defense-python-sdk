@@ -56,40 +56,47 @@ agentsec.protect(
     llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
     mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
     
-    # API mode configuration (LLM)
-    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
-    api_mode_llm_endpoint=os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
-    api_mode_llm_api_key=os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
-    api_mode_fail_open_llm=True,
-    
-    # API mode configuration (MCP)
-    api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "monitor"),
-    api_mode_mcp_endpoint=os.getenv("AI_DEFENSE_API_MODE_MCP_ENDPOINT"),
-    api_mode_mcp_api_key=os.getenv("AI_DEFENSE_API_MODE_MCP_API_KEY"),
-    api_mode_fail_open_mcp=True,
-    
-    # Gateway mode configuration (LLM)
-    # Uses existing Azure OpenAI gateway settings from .env
-    providers={
-        "azure_openai": {
-            "gateway_url": os.getenv("AGENTSEC_AZURE_OPENAI_GATEWAY_URL"),
-            "gateway_api_key": os.getenv("AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY"),
+    # API Mode Configuration
+    api_mode={
+        "llm": {
+            "mode": os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
+            "endpoint": os.getenv("AI_DEFENSE_API_MODE_LLM_ENDPOINT"),
+            "api_key": os.getenv("AI_DEFENSE_API_MODE_LLM_API_KEY"),
         },
+        "mcp": {
+            "mode": os.getenv("AGENTSEC_API_MODE_MCP", "monitor"),
+            "endpoint": os.getenv("AI_DEFENSE_API_MODE_MCP_ENDPOINT"),
+            "api_key": os.getenv("AI_DEFENSE_API_MODE_MCP_API_KEY"),
+        },
+        "llm_defaults": {"fail_open": True},
+        "mcp_defaults": {"fail_open": True},
     },
     
-    # Gateway mode configuration (MCP)
-    gateway_mode_mcp_url=os.getenv("AGENTSEC_MCP_GATEWAY_URL"),
-    gateway_mode_mcp_api_key=os.getenv("AGENTSEC_MCP_GATEWAY_API_KEY"),
-    gateway_mode_fail_open_mcp=True,
+    # Gateway Mode Configuration (LLM)
+    # Uses existing Azure OpenAI gateway settings from .env
+    gateway_mode={
+        "llm_gateways": {
+            "azure-openai-default": {
+                "gateway_url": os.getenv("AGENTSEC_AZURE_OPENAI_GATEWAY_URL"),
+                "gateway_api_key": os.getenv("AGENTSEC_AZURE_OPENAI_GATEWAY_API_KEY"),
+                "provider": "azure_openai",
+                "default": True,
+            },
+        },
+        "mcp_gateways": {
+            os.getenv("MCP_SERVER_URL", ""): {
+                "gateway_url": os.getenv("AGENTSEC_MCP_GATEWAY_URL"),
+                "gateway_api_key": os.getenv("AGENTSEC_MCP_GATEWAY_API_KEY"),
+            },
+        },
+        "mcp_defaults": {"fail_open": True},
+    },
     
     # Disable auto .env loading since we did it manually
     auto_dotenv=False,
 )
 
-print(f"[agentsec] LLM: {os.getenv('AGENTSEC_API_MODE_LLM', 'monitor')} | "
-      f"MCP: {os.getenv('AGENTSEC_API_MODE_MCP', 'monitor')} | "
-      f"Integration: LLM={os.getenv('AGENTSEC_LLM_INTEGRATION_MODE', 'api')}, MCP={os.getenv('AGENTSEC_MCP_INTEGRATION_MODE', 'api')} | "
-      f"Patched: {agentsec.get_patched_clients()}")
+print(f"[agentsec] Patched: {agentsec.get_patched_clients()}")
 
 # =============================================================================
 # Import LangChain libraries (AFTER agentsec.protect())

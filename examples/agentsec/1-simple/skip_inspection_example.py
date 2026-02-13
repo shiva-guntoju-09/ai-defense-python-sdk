@@ -30,7 +30,10 @@ if env_file.exists():
 from aidefense.runtime import agentsec
 from aidefense.runtime.agentsec import skip_inspection, no_inspection
 
-agentsec.protect()
+agentsec.protect(
+    llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
+    mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
+)
 
 # Now import the OpenAI client (will be auto-patched)
 from openai import OpenAI

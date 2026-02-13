@@ -49,8 +49,10 @@ from aidefense.runtime import agentsec
 agentsec.protect(
     llm_integration_mode=os.getenv("AGENTSEC_LLM_INTEGRATION_MODE", "api"),
     mcp_integration_mode=os.getenv("AGENTSEC_MCP_INTEGRATION_MODE", "api"),
-    api_mode_llm=os.getenv("AGENTSEC_API_MODE_LLM", "monitor"),
-    api_mode_mcp=os.getenv("AGENTSEC_API_MODE_MCP", "monitor"),
+    api_mode={
+        "llm": {"mode": os.getenv("AGENTSEC_API_MODE_LLM", "monitor")},
+        "mcp": {"mode": os.getenv("AGENTSEC_API_MODE_MCP", "monitor")},
+    },
 )
 
 print(f"[agentsec] Patched clients: {agentsec.get_patched_clients()}")

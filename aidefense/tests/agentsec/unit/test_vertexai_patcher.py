@@ -42,7 +42,10 @@ class TestVertexAIPatcherInspection:
         mock_get_inspector.return_value = mock_inspector
         
         # Setup state
-        _state.set_state(initialized=True, llm_rules=None, api_mode_fail_open_llm=True, api_mode_llm="monitor")
+        _state.set_state(
+            initialized=True,
+            api_mode={"llm": {"mode": "monitor"}, "llm_defaults": {"fail_open": True}},
+        )
         clear_inspection_context()
         
         # Mock wrapped function
@@ -79,7 +82,10 @@ class TestVertexAIPatcherInspection:
         mock_get_inspector.return_value = mock_inspector
         
         # Setup state in enforce mode
-        _state.set_state(initialized=True, llm_rules=None, api_mode_fail_open_llm=True, api_mode_llm="enforce")
+        _state.set_state(
+            initialized=True,
+            api_mode={"llm": {"mode": "enforce"}, "llm_defaults": {"fail_open": True}},
+        )
         clear_inspection_context()
         
         # Mock wrapped function
@@ -114,7 +120,10 @@ class TestVertexAIPatcherAsync:
         mock_get_inspector.return_value = mock_inspector
         
         # Setup state
-        _state.set_state(initialized=True, llm_rules=None, api_mode_fail_open_llm=True, api_mode_llm="monitor")
+        _state.set_state(
+            initialized=True,
+            api_mode={"llm": {"mode": "monitor"}, "llm_defaults": {"fail_open": True}},
+        )
         clear_inspection_context()
         
         # Mock wrapped async function

@@ -74,8 +74,8 @@ class TestFileStructure:
             content = f.read()
         
         assert "OPENAI_API_KEY" in content, "Should document OPENAI_API_KEY"
-        assert "AGENTSEC_API_MODE_LLM" in content, "Should document AGENTSEC_API_MODE_LLM"
-        assert "MCP_SERVER_URL" in content, "Should document MCP_SERVER_URL"
+        assert "AI_DEFENSE_API_MODE_LLM_API_KEY" in content, "Should document AI_DEFENSE_API_MODE_LLM_API_KEY"
+        assert "AI_DEFENSE_API_MODE_MCP_API_KEY" in content, "Should document MCP_SERVER_URL"
     
     def test_runner_script_exists(self):
         """Test that scripts/run.sh exists."""
@@ -143,8 +143,8 @@ class TestImportOrder:
         assert protect_line < autogen_line, "agentsec.protect() should be called before AutoGen import"
     
     def test_agentsec_protect_called(self, example_code):
-        """Test that agentsec.protect() is called."""
-        assert "agentsec.protect()" in example_code, "Should call agentsec.protect()"
+        """Test that agentsec.protect() is called with config."""
+        assert "agentsec.protect(" in example_code and "config=config_path" in example_code, "Should call agentsec.protect() with config"
 
 
 # =============================================================================
@@ -158,13 +158,13 @@ class TestAgentsecIntegration:
         """Test that agentsec.protect() is called."""
         assert "agentsec.protect" in example_code, "Should call agentsec.protect()"
     
-    def test_agentsec_protect_minimal(self, example_code):
-        """Test that agentsec.protect() is used with minimal setup."""
-        assert "agentsec.protect()" in example_code, "Should call agentsec.protect()"
+    def test_agentsec_protect_with_config(self, example_code):
+        """Test that agentsec.protect() is used with YAML config."""
+        assert "agentsec.protect(" in example_code and "config=config_path" in example_code, "Should call agentsec.protect() with config"
     
-    def test_mode_from_environment(self, example_code):
-        """Test that mode is read from environment variable."""
-        assert 'AGENTSEC_API_MODE_LLM' in example_code, "Should read AGENTSEC_API_MODE_LLM from env"
+    def test_config_yaml_referenced(self, example_code):
+        """Test that agentsec.yaml config file is referenced."""
+        assert 'agentsec.yaml' in example_code, "Should reference agentsec.yaml config file"
     
     def test_security_policy_error_handled(self, example_code):
         """Test that SecurityPolicyError is imported and handled."""

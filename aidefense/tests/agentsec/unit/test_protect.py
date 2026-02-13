@@ -8,6 +8,7 @@ import pytest
 from aidefense.runtime import agentsec
 from aidefense.runtime.agentsec import protect
 from aidefense.runtime.agentsec._state import reset
+from aidefense.runtime.agentsec.exceptions import ConfigurationError
 
 
 _ENV_PREFIXES = ("AGENTSEC_", "AI_DEFENSE_")
@@ -41,28 +42,28 @@ class TestProtect:
     def test_protect_default_arguments(self):
         """Test protect() with default arguments succeeds.
         
-        Default mode is 'monitor' (safer for development).
-        Can be overridden via AGENTSEC_API_MODE_LLM/MCP env vars.
+        With no args, protect() sets initialized=True with no mode configured
+        (api_mode_llm and api_mode_mcp are None).
         """
         protect()
         
         from aidefense.runtime.agentsec._state import get_api_mode_llm, get_api_mode_mcp, is_initialized
         assert is_initialized()
-        assert get_api_mode_llm() == "monitor"  # Default is 'monitor' for safety
-        assert get_api_mode_mcp() == "monitor"
+        assert get_api_mode_llm() is None
+        assert get_api_mode_mcp() is None
 
     def test_protect_idempotent(self):
         """Test protect() is idempotent (multiple calls don't error)."""
-        protect(api_mode_llm="enforce")
-        protect(api_mode_llm="enforce")  # Should not raise
-        protect(api_mode_llm="monitor")  # Should not change mode (idempotent)
+        protect(api_mode={"llm": {"mode": "enforce"}})
+        protect(api_mode={"llm": {"mode": "enforce"}})  # Should not raise
+        protect(api_mode={"llm": {"mode": "monitor"}})  # Should not change mode (idempotent)
         
         from aidefense.runtime.agentsec._state import get_api_mode_llm
         assert get_api_mode_llm() == "enforce"  # First call wins
 
     def test_protect_mode_off(self):
-        """Test protect() with all modes='off' skips initialization."""
-        protect(api_mode_llm="off", api_mode_mcp="off")
+        """Test protect() with all modes='off'."""
+        protect(api_mode={"llm": {"mode": "off"}, "mcp": {"mode": "off"}})
         
         from aidefense.runtime.agentsec._state import get_api_mode_llm, get_api_mode_mcp, is_initialized
         assert is_initialized()
@@ -70,42 +71,31 @@ class TestProtect:
         assert get_api_mode_mcp() == "off"
 
     def test_protect_invalid_mode(self):
-        """Test protect() with invalid mode raises ValueError."""
-        with pytest.raises(ValueError, match="Invalid api_mode_llm"):
-            protect(api_mode_llm="invalid")
+        """Test protect() with invalid mode raises ConfigurationError."""
+        with pytest.raises(ConfigurationError, match="Invalid api_mode.llm.mode"):
+            protect(api_mode={"llm": {"mode": "invalid"}})
         
-        with pytest.raises(ValueError, match="Invalid api_mode_llm"):
-            protect(api_mode_llm="ENFORCE")  # Case sensitive
+        reset()
+        with pytest.raises(ConfigurationError, match="Invalid api_mode.llm.mode"):
+            protect(api_mode={"llm": {"mode": "ENFORCE"}})  # Case sensitive
             
-        with pytest.raises(ValueError, match="Invalid api_mode_mcp"):
-            protect(api_mode_mcp="invalid")
+        reset()
+        with pytest.raises(ConfigurationError, match="Invalid api_mode.mcp.mode"):
+            protect(api_mode={"mcp": {"mode": "invalid"}})
 
     def test_protect_llm_rules_parameter(self):
-        """Test protect() accepts api_mode_llm_rules parameter."""
+        """Test protect() accepts rules via api_mode.llm.rules."""
         protect(
-            api_mode_llm_rules=["jailbreak", "prompt_injection"],
+            api_mode={"llm": {"rules": ["jailbreak", "prompt_injection"]}},
         )
         
         from aidefense.runtime.agentsec._state import get_llm_rules
         assert get_llm_rules() == ["jailbreak", "prompt_injection"]
 
-    def test_protect_llm_rules_from_env(self):
-        """Test protect() loads llm_rules from environment variable."""
-        env_vars = {
-            "AGENTSEC_LLM_RULES": "rule1,rule2",
-        }
-        
-        with patch.dict(os.environ, env_vars, clear=False):
-            protect()
-        
-        from aidefense.runtime.agentsec._state import get_llm_rules
-        assert get_llm_rules() == ["rule1", "rule2"]
-
     def test_protect_fine_grained_modes(self):
         """Test protect() with fine-grained mode control."""
         protect(
-            api_mode_llm="enforce",
-            api_mode_mcp="monitor",
+            api_mode={"llm": {"mode": "enforce"}, "mcp": {"mode": "monitor"}},
         )
         
         from aidefense.runtime.agentsec._state import get_api_mode_llm, get_api_mode_mcp
@@ -116,49 +106,64 @@ class TestProtect:
         """Test protect() with gateway mode configuration parameters."""
         protect(
             llm_integration_mode="gateway",
-            providers={
-                "openai": {"gateway_url": "https://gateway.example.com/openai", "gateway_api_key": "openai-key-123"},
+            gateway_mode={
+                "llm_gateways": {
+                    "openai-default": {
+                        "gateway_url": "https://gateway.example.com/openai",
+                        "gateway_api_key": "openai-key-123",
+                        "provider": "openai",
+                        "default": True,
+                    },
+                },
+                "mcp_gateways": {
+                    "https://mcp.example.com/mcp": {"gateway_url": "https://gateway.example.com/mcp", "gateway_api_key": "mcp-key-456"},
+                },
             },
             mcp_integration_mode="gateway",
-            gateway_mode_mcp_url="https://gateway.example.com/mcp",
-            gateway_mode_mcp_api_key="mcp-key-456",
         )
         
         from aidefense.runtime.agentsec._state import (
             get_llm_integration_mode,
             get_mcp_integration_mode,
-            get_provider_gateway_url,
-            get_provider_gateway_api_key,
-            get_gateway_mode_mcp_url,
-            get_gateway_mode_mcp_api_key,
+            get_default_gateway_for_provider,
+            get_mcp_gateway_for_url,
         )
         assert get_llm_integration_mode() == "gateway"
         assert get_mcp_integration_mode() == "gateway"
-        assert get_provider_gateway_url("openai") == "https://gateway.example.com/openai"
-        assert get_provider_gateway_api_key("openai") == "openai-key-123"
-        assert get_gateway_mode_mcp_url() == "https://gateway.example.com/mcp"
-        assert get_gateway_mode_mcp_api_key() == "mcp-key-456"
+        openai_gateway = get_default_gateway_for_provider("openai")
+        assert openai_gateway is not None
+        assert openai_gateway["gateway_url"] == "https://gateway.example.com/openai"
+        assert openai_gateway["gateway_api_key"] == "openai-key-123"
+        mcp_gw = get_mcp_gateway_for_url("https://mcp.example.com/mcp")
+        assert mcp_gw is not None
+        assert mcp_gw["gateway_url"] == "https://gateway.example.com/mcp"
+        assert mcp_gw["gateway_api_key"] == "mcp-key-456"
 
     def test_protect_invalid_integration_mode(self):
-        """Test protect() with invalid integration mode raises ValueError."""
-        with pytest.raises(ValueError, match="Invalid llm_integration_mode"):
+        """Test protect() with invalid integration mode raises ConfigurationError."""
+        with pytest.raises(ConfigurationError, match="Invalid llm_integration_mode"):
             protect(llm_integration_mode="invalid")
         
-        # Reset for next test
         reset()
-        
-        with pytest.raises(ValueError, match="Invalid mcp_integration_mode"):
+        with pytest.raises(ConfigurationError, match="Invalid mcp_integration_mode"):
             protect(mcp_integration_mode="invalid")
 
     def test_protect_llm_gateway_only(self):
         """Test protect() with LLM in gateway mode, MCP in API mode."""
         protect(
             llm_integration_mode="gateway",
-            providers={
-                "openai": {"gateway_url": "https://gateway.example.com/openai", "gateway_api_key": "key"},
+            gateway_mode={
+                "llm_gateways": {
+                    "openai-default": {
+                        "gateway_url": "https://gateway.example.com/openai",
+                        "gateway_api_key": "key",
+                        "provider": "openai",
+                        "default": True,
+                    },
+                },
             },
             mcp_integration_mode="api",
-            api_mode_mcp="monitor",
+            api_mode={"mcp": {"mode": "monitor"}},
         )
         
         from aidefense.runtime.agentsec._state import (
@@ -173,12 +178,18 @@ class TestProtect:
     def test_protect_api_mode_parameters(self):
         """Test protect() with API mode configuration parameters."""
         protect(
-            api_mode_llm="enforce",
-            api_mode_llm_endpoint="https://api.example.com/api",
-            api_mode_llm_api_key="test-llm-key",
-            api_mode_mcp="monitor",
-            api_mode_mcp_endpoint="https://mcp-api.example.com/api",
-            api_mode_mcp_api_key="test-mcp-key",
+            api_mode={
+                "llm": {
+                    "mode": "enforce",
+                    "endpoint": "https://api.example.com/api",
+                    "api_key": "test-llm-key",
+                },
+                "mcp": {
+                    "mode": "monitor",
+                    "endpoint": "https://mcp-api.example.com/api",
+                    "api_key": "test-mcp-key",
+                },
+            },
         )
         
         from aidefense.runtime.agentsec._state import (
@@ -199,9 +210,13 @@ class TestProtect:
     def test_protect_api_mode_mcp_fallback(self):
         """Test protect() with MCP falling back to LLM API config."""
         protect(
-            api_mode_llm_endpoint="https://api.example.com/api",
-            api_mode_llm_api_key="test-llm-key",
-            # MCP not specified - should fall back to LLM
+            api_mode={
+                "llm": {
+                    "endpoint": "https://api.example.com/api",
+                    "api_key": "test-llm-key",
+                },
+                # MCP not specified - should fall back to LLM
+            },
         )
         
         from aidefense.runtime.agentsec._state import (
@@ -215,44 +230,33 @@ class TestProtect:
     def test_protect_api_mode_fail_open(self):
         """Test protect() with fail_open settings for API mode."""
         protect(
-            api_mode_fail_open_llm=False,
-            api_mode_fail_open_mcp=False,
+            api_mode={
+                "llm_defaults": {"fail_open": False},
+                "mcp_defaults": {"fail_open": False},
+            },
         )
         
         from aidefense.runtime.agentsec._state import (
-            get_api_mode_fail_open_llm,
-            get_api_mode_fail_open_mcp,
+            get_api_llm_fail_open,
+            get_api_mcp_fail_open,
         )
-        assert get_api_mode_fail_open_llm() is False
-        assert get_api_mode_fail_open_mcp() is False
+        assert get_api_llm_fail_open() is False
+        assert get_api_mcp_fail_open() is False
 
     def test_protect_gateway_mode_fail_open(self):
         """Test protect() with fail_open settings for gateway mode."""
         protect(
             llm_integration_mode="gateway",
             mcp_integration_mode="gateway",
-            gateway_mode_fail_open_llm=False,
-            gateway_mode_fail_open_mcp=False,
+            gateway_mode={
+                "llm_defaults": {"fail_open": False},
+                "mcp_defaults": {"fail_open": False},
+            },
         )
         
         from aidefense.runtime.agentsec._state import (
-            get_gateway_mode_fail_open_llm,
-            get_gateway_mode_fail_open_mcp,
+            get_gw_llm_fail_open,
+            get_gw_mcp_fail_open,
         )
-        assert get_gateway_mode_fail_open_llm() is False
-        assert get_gateway_mode_fail_open_mcp() is False
-
-    def test_protect_gateway_mode_control(self):
-        """Test protect() with gateway mode on/off control."""
-        protect(
-            llm_integration_mode="gateway",
-            gateway_mode_llm="off",
-            gateway_mode_mcp="on",
-        )
-        
-        from aidefense.runtime.agentsec._state import (
-            get_gateway_mode_llm,
-            get_gateway_mode_mcp,
-        )
-        assert get_gateway_mode_llm() == "off"
-        assert get_gateway_mode_mcp() == "on"
+        assert get_gw_llm_fail_open() is False
+        assert get_gw_mcp_fail_open() is False
