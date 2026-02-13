@@ -10,12 +10,29 @@ from aidefense.runtime.agentsec import protect
 from aidefense.runtime.agentsec._state import reset
 
 
+_ENV_PREFIXES = ("AGENTSEC_", "AI_DEFENSE_")
+
+
 @pytest.fixture(autouse=True)
 def reset_state():
-    """Reset agentsec state before and after each test."""
+    """Reset agentsec state and clear agentsec/AI Defense env vars before and after each test.
+    
+    This ensures tests are not affected by environment variables set by
+    integration test runs or .env files sourced into the shell.
+    Clears both AGENTSEC_* and AI_DEFENSE_* prefixed variables.
+    """
+    # Save and clear any relevant env vars
+    saved_env = {k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIXES)}
+    for k in saved_env:
+        del os.environ[k]
     reset()
     yield
     reset()
+    # Restore original env vars
+    for k in list(os.environ.keys()):
+        if k.startswith(_ENV_PREFIXES):
+            del os.environ[k]
+    os.environ.update(saved_env)
 
 
 class TestProtect:

@@ -152,6 +152,27 @@ def _metadata_to_runtime(metadata: Dict[str, Any]) -> Optional[Metadata]:
     return Metadata(**kwargs) if kwargs else None
 
 
+def _normalize_rule_name(name: str) -> Optional[RuleName]:
+    """Try to match a rule name string to a RuleName enum value.
+    
+    Attempts exact match first, then case-insensitive match with
+    underscore/hyphen normalization (e.g. "prompt_injection" -> "Prompt Injection").
+    
+    Returns None if no matching RuleName is found.
+    """
+    # Exact match
+    try:
+        return RuleName(name)
+    except ValueError:
+        pass
+    # Normalize: lowercase, replace underscores/hyphens with spaces
+    normalized = name.lower().replace("_", " ").replace("-", " ").strip()
+    for rule_name in RuleName:
+        if rule_name.value.lower() == normalized:
+            return rule_name
+    return None
+
+
 def _inspection_config_from_inspector(
     default_rules: Optional[List[Any]],
     entity_types: Optional[List[str]],
@@ -170,9 +191,16 @@ def _inspection_config_from_inspector(
         if entity_types and rule_dict.get("entity_types") is None:
             rule_dict["entity_types"] = entity_types
         rn = rule_dict.get("rule_name")
-        try:
-            rule_name = RuleName(str(rn)) if rn else RuleName.PII
-        except ValueError:
+        if rn:
+            matched = _normalize_rule_name(str(rn))
+            if matched is not None:
+                rule_name = matched
+            else:
+                # Preserve the original string for custom/server-side rule names
+                # (e.g. "jailbreak") instead of silently falling back to PII
+                rule_name = str(rn)
+                logger.debug(f"Rule name '{rn}' not in RuleName enum, passing through as-is")
+        else:
             rule_name = RuleName.PII
         rules.append(Rule(rule_name=rule_name, entity_types=rule_dict.get("entity_types")))
     if not rules and entity_types:
@@ -586,13 +614,56 @@ class LLMInspector:
         )
     
     def close(self) -> None:
-        """Release the sync ChatInspectionClient so it can be garbage collected."""
+        """Release clients and close any open aiohttp sessions.
+        
+        This properly closes the async client's aiohttp session to prevent
+        'Unclosed client session' warnings during interpreter shutdown.
+        """
         with self._chat_client_lock:
             if self._chat_client is not None:
                 self._chat_client = None
+        async_client = None
         with self._async_chat_client_lock:
-            self._async_chat_client = None
-            self._async_loop_id = None
+            if self._async_chat_client is not None:
+                async_client = self._async_chat_client
+                self._async_chat_client = None
+                self._async_loop_id = None
+        if async_client is not None:
+            self._close_async_client_sync(async_client)
+    
+    def _close_async_client_sync(self, async_client) -> None:
+        """Close an async chat client's aiohttp session and connector from a synchronous context."""
+        try:
+            handler = getattr(async_client, '_request_handler', None)
+            if handler is None:
+                return
+            session = getattr(handler, '_session', None)
+            connector = getattr(handler, '_connector', None)
+
+            async def _close_all():
+                """Close both the session and the shared connector."""
+                if session is not None and not session.closed:
+                    await session.close()
+                if connector is not None and not connector.closed:
+                    await connector.close()
+
+            # Try to run the async close in an event loop
+            try:
+                loop = asyncio.get_event_loop()
+                if not loop.is_closed() and not loop.is_running():
+                    loop.run_until_complete(_close_all())
+                    return
+            except RuntimeError:
+                pass
+            # Fallback: create a new event loop
+            try:
+                new_loop = asyncio.new_event_loop()
+                new_loop.run_until_complete(_close_all())
+                new_loop.close()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"Could not close async session synchronously: {e}")
     
     async def aclose(self) -> None:
         """Release the AsyncChatInspectionClient session and clear cached clients."""

@@ -70,7 +70,7 @@ cd 2-agent-frameworks/strands-agent && poetry install && ./scripts/run.sh --open
 
 # 4. Run all tests from the repo root
 cd /path/to/ai-defense-python-sdk
-./scripts/run-unit-tests.sh           # ~1045 unit tests
+./scripts/run-unit-tests.sh           # ~1130 unit tests
 ./scripts/run-integration-tests.sh    # Full integration tests
 ```
 
@@ -305,6 +305,8 @@ ai-defense-python-sdk/
     ├── 1-simple/                   # Standalone examples
     │   ├── basic_protection.py     # Minimal setup
     │   ├── openai_example.py       # OpenAI client
+    │   ├── cohere_example.py       # Cohere v2 client
+    │   ├── mistral_example.py      # Mistral AI client
     │   ├── streaming_example.py    # Streaming responses
     │   ├── mcp_example.py          # MCP tool inspection
     │   ├── gateway_mode_example.py # Gateway mode
@@ -519,14 +521,13 @@ Three deployment modes for Microsoft Azure AI Foundry agents:
 cd 3-agent-runtimes/microsoft-foundry
 poetry install
 
-# Run LOCAL tests (default) - no Azure deployment needed
-./tests/integration/test-all-modes.sh              # All modes, local
-./tests/integration/test-all-modes.sh --local      # Explicit local mode
-./tests/integration/test-all-modes.sh --api        # API mode only, local
+# Run DEPLOY tests (default) - deploys to Azure and tests real endpoints
+./tests/integration/test-all-modes.sh              # All modes, deploy to Azure
+./tests/integration/test-all-modes.sh agent-app --api  # Agent app, API only
 
-# Run DEPLOY tests - deploys to Azure and tests real endpoints
-./tests/integration/test-all-modes.sh --deploy     # All modes, deploy to Azure
-./tests/integration/test-all-modes.sh --deploy agent-app --api  # Agent app, API only
+# Run LOCAL tests - no Azure deployment needed
+./tests/integration/test-all-modes.sh --local      # All modes, local
+./tests/integration/test-all-modes.sh --local --api # API mode only, local
 ```
 
 ### Runtime Integration Tests
@@ -823,19 +824,19 @@ decision.explanation     # Human-readable explanation
 
 | Category | Test Type | Test Count | What It Validates |
 |----------|-----------|:----------:|-------------------|
-| **Core SDK** | Unit | ~600 | Patching, inspection, decisions, config |
-| **Simple Examples** | Unit | ~70 | Example file structure, syntax |
+| **Core SDK** | Unit | ~670 | Patching, inspection, decisions, config |
+| **Simple Examples** | Unit | ~85 | Example file structure, syntax |
 | **Simple Examples** | Integration | 18 | 9 examples x 2 modes (API + Gateway) |
-| **Agent Frameworks** | Unit | ~180 | Agent setup, provider configs |
+| **Agent Frameworks** | Unit | ~210 | Agent setup, provider configs |
 | **Agent Frameworks** | Integration | ~40 | 6 frameworks x (2-4 providers) x 2 modes* |
-| **AgentCore** | Unit | ~60 | Deploy scripts, protection setup |
+| **AgentCore** | Unit | ~65 | Deploy scripts, protection setup |
 | **AgentCore** | Integration | 8 | (3 deploy x 2 modes) + 2 MCP tests |
 | **Vertex AI** | Unit | ~50 | Deploy scripts, SDK selection |
 | **Vertex AI** | Integration | 16 | (3 deploy x 2 modes) + 2 MCP tests** |
 | **Azure AI Foundry** | Unit | ~50 | Deploy scripts, agent factory, endpoints |
 | **Azure AI Foundry** | Integration | 8 | (3 deploy x 2 modes) + 2 MCP tests |
 
-**Total: ~1045 unit tests**
+**Total: ~1130 unit tests**
 
 *Provider support varies by framework: OpenAI Agents supports 2 providers (openai, azure), others support 4 (openai, azure, vertex, bedrock)
 
@@ -847,7 +848,7 @@ decision.explanation     # Human-readable explanation
 # From project root
 cd /path/to/ai-defense-python-sdk
 
-# All unit tests (~1045 tests)
+# All unit tests (~1130 tests)
 ./scripts/run-unit-tests.sh
 
 # All integration tests
