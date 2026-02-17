@@ -86,7 +86,19 @@ def _build_aws_session(gw_settings):
     elif gw_settings.aws_profile:
         session_kwargs["profile_name"] = gw_settings.aws_profile
 
-    session = boto3.Session(**session_kwargs)
+    try:
+        session = boto3.Session(**session_kwargs)
+    except Exception:
+        # Profile may not exist (e.g., Lambda uses IAM execution role, not profiles).
+        # Fall back to the default credential chain without the profile.
+        if "profile_name" in session_kwargs:
+            logger.debug(
+                "[GATEWAY] AWS profile '%s' not found, falling back to default credential chain",
+                session_kwargs.pop("profile_name"),
+            )
+            session = boto3.Session(**session_kwargs)
+        else:
+            raise
 
     # Step 2: Assume role if configured (cross-account / least-privilege)
     if gw_settings.aws_role_arn:
@@ -414,7 +426,7 @@ def _handle_agentcore_gateway_call(operation_name: str, api_params: Dict, instan
         )
     
     agent_runtime_arn = api_params.get("agentRuntimeArn", "")
-    session_id = api_params.get("runtimeSessionId", "")
+    session_id = api_params.get("runtimeSessionId") or ""
     payload = api_params.get("payload", b"")
     
     # Ensure payload is string for JSON encoding
@@ -433,8 +445,9 @@ def _handle_agentcore_gateway_call(operation_name: str, api_params: Dict, instan
         
         # Add AgentCore-specific fields
         request_body["agentRuntimeArn"] = agent_runtime_arn
-        if session_id:
-            request_body["runtimeSessionId"] = session_id
+        # Always provide a session ID; generate one if the caller omitted it
+        import uuid
+        request_body["runtimeSessionId"] = session_id if session_id else str(uuid.uuid4())
         
         body_bytes = json.dumps(request_body).encode('utf-8')
         headers = {
@@ -635,7 +648,7 @@ def _enforce_decision(decision: Decision) -> None:
         raise SecurityPolicyError(decision)
 
 
-def _is_bedrock_operation(operation_name: str, api_params: Dict) -> bool:
+def _is_bedrock_operation(operation_name: str) -> bool:
     """Check if this is a Bedrock operation we should intercept."""
     return operation_name in BEDROCK_OPERATIONS
 
@@ -1142,41 +1155,6 @@ class _BedrockFakeStreamWrapper:
         pass
 
 
-class _BedrockEventStreamWrapper:
-    """
-    Wrapper to make our generator look like a Bedrock EventStream.
-    
-    Bedrock streaming responses have a 'stream' attribute that is iterable
-    and yields event dicts. Some SDKs also expect __iter__ to work.
-    """
-    
-    def __init__(self, event_generator):
-        self._generator = event_generator
-        self._events = None
-    
-    def __iter__(self):
-        return self
-    
-    def __next__(self):
-        if self._events is None:
-            self._events = iter(self._generator)
-        return next(self._events)
-    
-    def __aiter__(self):
-        return self
-    
-    async def __anext__(self):
-        if self._events is None:
-            self._events = iter(self._generator)
-        try:
-            return next(self._events)
-        except StopIteration:
-            raise StopAsyncIteration
-    
-    def close(self):
-        """Close the stream."""
-        pass
-
 
 def _handle_agentcore_call(wrapped, instance, args, kwargs, operation_name: str, api_params: Dict):
     """
@@ -1231,7 +1209,7 @@ def _wrap_make_api_call(wrapped, instance, args, kwargs):
         return _handle_agentcore_call(wrapped, instance, args, kwargs, operation_name, api_params)
     
     # Only intercept Bedrock operations
-    if not _is_bedrock_operation(operation_name, api_params):
+    if not _is_bedrock_operation(operation_name):
         return wrapped(*args, **kwargs)
     
     # Reset inspection context for each new API call so successive calls

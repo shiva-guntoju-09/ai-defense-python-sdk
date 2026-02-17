@@ -17,6 +17,11 @@
 llm_integration_mode: gateway       # gateway | api
 mcp_integration_mode: gateway       # gateway | api
 
+# -- Connection pool settings -------------------------------------------------
+# Controls the HTTP connection pool used for Cisco AI Defense API calls.
+# pool_max_connections: 100       # Max simultaneous connections (default: 100)
+# pool_max_keepalive: 20          # Max idle keep-alive connections (default: 20)
+
 # -- Gateway mode configuration ----------------------------------------------
 # Used when llm_integration_mode or mcp_integration_mode is "gateway".
 gateway_mode:
@@ -74,6 +79,7 @@ gateway_mode:
       auth_mode: google_adc         # uses Google ADC, no api_key needed
       provider: vertexai
       default: true
+      sdk: ${GOOGLE_AI_SDK}         # "google_genai" (ChatGoogleGenerativeAI) or "vertexai" (ChatVertexAI)
       # google_genai patcher falls back to vertexai gateway
       # Per-gateway GCP ADC credentials (all optional, fall back to
       # default google.auth.default() when omitted):

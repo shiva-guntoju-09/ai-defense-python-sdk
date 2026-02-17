@@ -409,7 +409,7 @@ test_provider_with_mode() {
     local all_checks_passed=true
     
     # Check 1: LLM call was intercepted
-    if grep -q "\[PATCHED\] LLM CALL" "$log_file" || grep -q "\[PATCHED CALL\]" "$log_file"; then
+    if grep -q "\[PATCHED\] LLM CALL" "$log_file"; then
         log_pass "LLM call intercepted by AI Defense"
         log_detail "$(grep -m1 'PATCHED.*LLM CALL' "$log_file" | head -1)"
     else

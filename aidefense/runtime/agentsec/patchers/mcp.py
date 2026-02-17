@@ -19,6 +19,7 @@ import logging
 import threading
 from typing import Any, Dict, Optional, Union
 
+import httpx
 import wrapt
 
 from .. import _state
@@ -120,6 +121,75 @@ def _enforce_decision(decision: Decision) -> None:
     mode = _state.get_mcp_mode()
     if mode == "enforce" and decision.action == "block":
         raise SecurityPolicyError(decision)
+
+
+def _patch_mcp_handle_get_stream_405() -> None:
+    """Patch MCP StreamableHTTPTransport.handle_get_stream to skip retries on 405.
+
+    Some MCP servers (e.g. remote.mcpservers.org, AI Defense gateway) return 405
+    Method Not Allowed when the client tries to reconnect the GET SSE stream after
+    a disconnect. Retrying is futile and produces noisy logs. Tool calls still
+    succeed via the POST path. This patch detects 405 and exits early.
+    """
+    try:
+        from mcp.client import streamable_http as _sh
+    except ImportError:
+        return
+
+    _LAST_EVENT_ID = getattr(_sh, "LAST_EVENT_ID", "last-event-id")
+    _DEFAULT_RECONNECTION_DELAY_MS = getattr(_sh, "DEFAULT_RECONNECTION_DELAY_MS", 1000)
+    _MAX_RECONNECTION_ATTEMPTS = getattr(_sh, "MAX_RECONNECTION_ATTEMPTS", 2)
+    _mcp_logger = getattr(_sh, "logger", logger)
+
+    async def _patched_handle_get_stream(self, client, read_stream_writer):
+        import anyio
+        from httpx_sse import aconnect_sse
+
+        last_event_id = None
+        retry_interval_ms = None
+        attempt = 0
+
+        while attempt < _MAX_RECONNECTION_ATTEMPTS:
+            try:
+                if not self.session_id:
+                    return
+                headers = self._prepare_headers()
+                if last_event_id:
+                    headers[_LAST_EVENT_ID] = last_event_id
+
+                async with aconnect_sse(client, "GET", self.url, headers=headers) as event_source:
+                    event_source.response.raise_for_status()
+                    _mcp_logger.debug("GET SSE connection established")
+
+                    async for sse in event_source.aiter_sse():
+                        if sse.id:
+                            last_event_id = sse.id
+                        if sse.retry is not None:
+                            retry_interval_ms = sse.retry
+                        await self._handle_sse_event(sse, read_stream_writer)
+
+                attempt = 0
+            except Exception as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 405:
+                    logger.debug(
+                        "MCP GET stream reconnection returned 405 (Method Not Allowed); "
+                        "server does not support stream reconnect, skipping retries"
+                    )
+                    return
+                _mcp_logger.debug("GET stream error", exc_info=True)
+                attempt += 1
+
+            if attempt >= _MAX_RECONNECTION_ATTEMPTS:
+                _mcp_logger.debug(
+                    f"GET stream max reconnection attempts ({_MAX_RECONNECTION_ATTEMPTS}) exceeded"
+                )
+                return
+
+            delay_ms = retry_interval_ms if retry_interval_ms is not None else _DEFAULT_RECONNECTION_DELAY_MS
+            _mcp_logger.info(f"GET stream disconnected, reconnecting in {delay_ms}ms...")
+            await anyio.sleep(delay_ms / 1000.0)
+
+    _sh.StreamableHTTPTransport.handle_get_stream = _patched_handle_get_stream
 
 
 def _wrap_streamablehttp_client(wrapped, instance, args, kwargs):
@@ -514,7 +584,14 @@ def patch_mcp() -> bool:
         except Exception as e:
             # This is less critical - only needed for gateway mode URL redirection
             logger.debug(f"Could not patch streamablehttp_client (gateway mode): {e}")
-        
+
+        # Patch handle_get_stream to suppress 405 retries (server doesn't support GET reconnection)
+        try:
+            _patch_mcp_handle_get_stream_405()
+            logger.debug("MCP handle_get_stream patched for 405 reconnection handling")
+        except Exception as e:
+            logger.debug(f"Could not patch MCP handle_get_stream (405 mitigation): {e}")
+
         mark_patched("mcp")
         # Build list of patched methods for logging
         patched_methods = ["call_tool"]

@@ -370,6 +370,98 @@ else:
 }
 
 # =============================================================================
+# Verify AI Defense protection in server-side logs (for DEPLOY tests)
+# =============================================================================
+# LLM protection runs SERVER-SIDE inside Azure containers/functions. The client
+# only sees the HTTP response. We fetch server logs (az ml / az webapp) and
+# check for agentsec inspection patterns.
+# =============================================================================
+
+verify_ai_defense_protection_azure() {
+    local log_file="$1"
+    local mode="$2"  # "api" or "gateway"
+    
+    local llm_req=false
+    local llm_resp=false
+    local patched=false
+    
+    # Check if agentsec patched (Microsoft Foundry uses openai via AzureChatOpenAI)
+    if grep -qi "Patched.*openai\|Patched:.*openai" "$log_file"; then
+        patched=true
+    fi
+    
+    # For API mode: check for LLM inspection logs (exclude MCP-only lines)
+    if [ "$mode" = "api" ]; then
+        if grep -qi "\[PATCHED CALL\] OpenAI\.chat.completions.*Request inspection\|\[PATCHED CALL\] OpenAI\.chat.*Request decision" "$log_file"; then
+            llm_req=true
+        fi
+        if grep -qi "\[PATCHED CALL\] OpenAI\.chat.completions.*Response inspection\|\[PATCHED CALL\] OpenAI\.chat.*Response decision" "$log_file"; then
+            llm_resp=true
+        fi
+    fi
+    
+    # For Gateway mode: check for gateway routing of LLM calls
+    if [ "$mode" = "gateway" ]; then
+        if grep -qi "\[PATCHED CALL\] Gateway mode.*routing to AI Defense Gateway\|\[PATCHED CALL\] OpenAI.*Gateway" "$log_file"; then
+            llm_req=true
+            llm_resp=true  # Gateway handles both
+        fi
+    fi
+    
+    if [ "$patched" = true ]; then
+        log_info "✓ agentsec patched: openai (server-side)"
+    fi
+    if [ "$llm_req" = true ]; then
+        log_info "✓ LLM Request protection: verified in server logs"
+    fi
+    if [ "$llm_resp" = true ]; then
+        log_info "✓ LLM Response protection: verified in server logs"
+    fi
+    if [ "$patched" = false ] && [ "$llm_req" = false ] && [ "$llm_resp" = false ]; then
+        log_info "LLM protection evidence not found in fetched logs (agentsec runs server-side)"
+        log_info "To verify manually: az ml online-deployment get-logs --name default --endpoint-name <endpoint> --resource-group \$AZURE_RESOURCE_GROUP --workspace-name \$AZURE_AI_FOUNDRY_PROJECT"
+    fi
+    return 0
+}
+
+# Fetch server-side logs from Azure ML Online Deployment (Agent App and Container)
+fetch_azure_ml_deployment_logs() {
+    local out_file="$1"
+    local endpoint_name="$2"
+    local deployment_name="${3:-default}"
+    
+    az ml online-deployment get-logs \
+        --name "$deployment_name" \
+        --endpoint-name "$endpoint_name" \
+        --resource-group "$AZURE_RESOURCE_GROUP" \
+        --workspace-name "$AZURE_AI_FOUNDRY_PROJECT" \
+        > "$out_file" 2>&1
+    return $?
+}
+
+# Fetch server-side logs from Azure Functions.
+# Must be started BEFORE invoke (stream captures logs in real-time).
+# Usage: Call start_azure_functions_log_capture first, then invoke, then stop_azure_functions_log_capture.
+start_azure_functions_log_capture() {
+    local out_file="$1"
+    # Start log stream in background (captures logs from upcoming invoke)
+    az webapp log tail \
+        --name "$AZURE_FUNCTION_APP_NAME" \
+        --resource-group "$AZURE_RESOURCE_GROUP" \
+        > "$out_file" 2>&1 &
+    AZURE_FUNC_TAIL_PID=$!
+    sleep 3  # Let stream connect
+}
+
+stop_azure_functions_log_capture() {
+    sleep 12  # Allow time for invoke logs to appear
+    if [ -n "${AZURE_FUNC_TAIL_PID:-}" ]; then
+        kill "$AZURE_FUNC_TAIL_PID" 2>/dev/null || true
+        wait "$AZURE_FUNC_TAIL_PID" 2>/dev/null || true
+    fi
+}
+
+# =============================================================================
 # Deployment Status Check Functions
 # =============================================================================
 
@@ -584,6 +676,18 @@ test_foundry_agent_app_deploy() {
         all_checks_passed=false
     fi
     
+    # Fetch server-side logs and verify LLM protection (agentsec runs inside container)
+    log_info "Checking server-side logs for AI Defense protection..."
+    local endpoint_name="${AGENT_ENDPOINT_NAME:-${ENDPOINT_NAME:-foundry-sre-agent}}"
+    local deployment_name="${AGENT_DEPLOYMENT_NAME:-default}"
+    local server_logs_file="$LOG_DIR/agent-app-deploy-${integration_mode}-server-logs.log"
+    if fetch_azure_ml_deployment_logs "$server_logs_file" "$endpoint_name" "$deployment_name"; then
+        verify_ai_defense_protection_azure "$server_logs_file" "$integration_mode"
+    else
+        log_info "Could not fetch Azure ML deployment logs (agentsec runs server-side)"
+        log_info "To verify manually: az ml online-deployment get-logs --name $deployment_name --endpoint-name $endpoint_name --resource-group \$AZURE_RESOURCE_GROUP --workspace-name \$AZURE_AI_FOUNDRY_PROJECT"
+    fi
+    
     if [ "$VERBOSE" = "true" ]; then
         echo ""
         echo -e "    ${MAGENTA}─── Response ───${NC}"
@@ -662,12 +766,20 @@ test_azure_functions_deploy() {
         fi
     fi
     
+    # Start log capture BEFORE invoke (stream captures logs in real-time)
+    local func_logs_file="$LOG_DIR/azure-functions-deploy-${integration_mode}-server-logs.log"
+    log_info "Starting server log capture..."
+    start_azure_functions_log_capture "$func_logs_file"
+
     # Invoke (retry once after brief wait to allow for cold start)
     log_info "Invoking function with: \"$TEST_QUESTION\""
     if ! bash "$invoke_script" "$TEST_QUESTION" > "$log_file" 2>&1; then
+        stop_azure_functions_log_capture
         log_info "First invoke failed (possible cold start); waiting 10s and retrying..."
         sleep 10
+        start_azure_functions_log_capture "$func_logs_file"
         if ! bash "$invoke_script" "$TEST_QUESTION" > "$log_file" 2>&1; then
+            stop_azure_functions_log_capture
             log_fail "Function invocation failed"
             echo -e "    ${MAGENTA}─── Invoke log (last 25 lines) ───${NC}"
             tail -25 "$log_file" | sed 's/^/    /'
@@ -676,6 +788,7 @@ test_azure_functions_deploy() {
             return 1
         fi
     fi
+    stop_azure_functions_log_capture
     log_pass "Function invocation successful"
 
     # Validate
@@ -686,6 +799,15 @@ test_azure_functions_deploy() {
     else
         log_fail "No response from function"
         all_checks_passed=false
+    fi
+
+    # Verify LLM protection in captured server-side logs (agentsec runs inside function)
+    log_info "Checking server-side logs for AI Defense protection..."
+    if [ -s "$func_logs_file" ]; then
+        verify_ai_defense_protection_azure "$func_logs_file" "$integration_mode"
+    else
+        log_info "Could not capture Azure Functions logs (agentsec runs server-side)"
+        log_info "To verify manually: az webapp log tail --name \$AZURE_FUNCTION_APP_NAME --resource-group \$AZURE_RESOURCE_GROUP (run before invoking)"
     fi
 
     if [ "$VERBOSE" = "true" ]; then
@@ -799,6 +921,18 @@ test_foundry_container_deploy() {
     else
         log_fail "No response from container"
         all_checks_passed=false
+    fi
+    
+    # Fetch server-side logs and verify LLM protection (agentsec runs inside container)
+    log_info "Checking server-side logs for AI Defense protection..."
+    local endpoint_name="${CONTAINER_ENDPOINT_NAME:-foundry-sre-container}"
+    local deployment_name="${CONTAINER_DEPLOYMENT_NAME:-default}"
+    local server_logs_file="$LOG_DIR/container-deploy-${integration_mode}-server-logs.log"
+    if fetch_azure_ml_deployment_logs "$server_logs_file" "$endpoint_name" "$deployment_name"; then
+        verify_ai_defense_protection_azure "$server_logs_file" "$integration_mode"
+    else
+        log_info "Could not fetch Azure ML deployment logs (agentsec runs server-side)"
+        log_info "To verify manually: az ml online-deployment get-logs --name $deployment_name --endpoint-name $endpoint_name --resource-group \$AZURE_RESOURCE_GROUP --workspace-name \$AZURE_AI_FOUNDRY_PROJECT"
     fi
     
     if [ "$VERBOSE" = "true" ]; then

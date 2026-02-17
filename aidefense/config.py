@@ -106,7 +106,7 @@ class BaseConfig(ABC):
         else:
             self.runtime_base_url = self.RUNTIME_REGION_ENDPOINTS.get(self.region)
 
-        self.runtime_base_url.rstrip("/")
+        self.runtime_base_url = self.runtime_base_url.rstrip("/")
 
     def _set_management_base_url(self, management_base_url: str):
         if management_base_url and isinstance(management_base_url, str):
@@ -117,7 +117,7 @@ class BaseConfig(ABC):
         else:
             self.management_base_url = self.MANAGEMENT_REGION_ENDPOINTS.get(self.region)
 
-        self.management_base_url.rstrip("/")
+        self.management_base_url = self.management_base_url.rstrip("/")
 
     def _set_logger(self, logger, logger_params: dict):
         if logger:

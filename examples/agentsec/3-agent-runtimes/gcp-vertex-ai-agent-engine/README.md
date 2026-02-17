@@ -5,7 +5,7 @@ This example demonstrates how to protect AI agents running on Google Cloud Platf
 ## Architecture
 
 ```
-User Prompt → LangChain Agent → ChatGoogleGenerativeAI (LLM)
+User Prompt → LangChain Agent → ChatGoogleGenerativeAI (LLM)  [or ChatVertexAI when sdk=vertexai]
                      ↓
                Tool Calling (Protected by agentsec)
                      ↓
@@ -258,6 +258,7 @@ poetry run pytest tests/unit/ -v
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID | Required |
+| `GOOGLE_AI_SDK` | Google AI SDK: `google_genai` (ChatGoogleGenerativeAI) or `vertexai` (ChatVertexAI). Set via `agentsec.yaml` gateway `sdk` field (resolves `${GOOGLE_AI_SDK}`) | `google_genai` |
 | `GOOGLE_CLOUD_LOCATION` | GCP region | `us-central1` |
 | `VERTEX_AI_MODEL` | Model to use | `gemini-2.0-flash-001` |
 | `MCP_SERVER_URL` | MCP server for fetch_url tool | Optional |

@@ -2,7 +2,8 @@
 Google GenAI SDK (google-genai) client autopatching.
 
 This module provides automatic inspection for the google-genai SDK calls
-by patching Models.generate_content() and related methods.
+by patching Models.generate_content(), Models.generate_content_stream(),
+and their async counterparts.
 
 The google-genai SDK is Google's modern unified library for accessing
 Gemini models via both the Gemini Developer API and Vertex AI.
@@ -314,7 +315,11 @@ def _handle_google_genai_gateway_call(
     Returns:
         Native response wrapped for attribute access
     """
-    import httpx
+    from ._google_common import (
+        build_vertexai_gateway_url,
+        vertexai_gateway_post,
+        _has_multi_turn_contents,
+    )
 
     if not gw_settings or not gw_settings.url:
         logger.warning("Gateway mode enabled but google-genai gateway URL not configured")
@@ -362,97 +367,123 @@ def _handle_google_genai_gateway_call(
         "contents": contents_list,
     }
     
-    # Extract config settings
+    # Extract config settings.
+    # config may be a GenerateContentConfig SDK object (attribute access) or
+    # a plain dict (e.g. from to_json_dict(), as Strands passes it).
     if config:
-        # === Generation Config (goes inside "generationConfig" in the REST body) ===
-        gen_config: Dict[str, Any] = {}
-        _GEN_CONFIG_ATTRS = [
-            ("temperature", "temperature"),
-            ("max_output_tokens", "maxOutputTokens"),
-            ("top_p", "topP"),
-            ("top_k", "topK"),
-            ("candidate_count", "candidateCount"),
-            ("stop_sequences", "stopSequences"),
-            ("response_mime_type", "responseMimeType"),
-            ("presence_penalty", "presencePenalty"),
-            ("frequency_penalty", "frequencyPenalty"),
-            ("seed", "seed"),
-        ]
-        for attr, camel_key in _GEN_CONFIG_ATTRS:
-            val = getattr(config, attr, None)
-            if val is not None:
-                gen_config[camel_key] = val
+        if isinstance(config, dict):
+            # Dict configs are already in REST API camelCase format.
+            # Merge relevant top-level keys directly into request_body.
+            _DICT_TOP_LEVEL_KEYS = (
+                "systemInstruction", "tools", "toolConfig", "safetySettings",
+            )
+            for key in _DICT_TOP_LEVEL_KEYS:
+                if key in config and config[key]:
+                    request_body[key] = config[key]
+            # Build generationConfig from dict keys
+            gen_config: Dict[str, Any] = {}
+            _GEN_CONFIG_DICT_KEYS = [
+                "temperature", "maxOutputTokens", "topP", "topK",
+                "candidateCount", "stopSequences", "responseMimeType",
+                "presencePenalty", "frequencyPenalty", "seed", "responseSchema",
+            ]
+            for key in _GEN_CONFIG_DICT_KEYS:
+                if key in config and config[key] is not None:
+                    gen_config[key] = config[key]
+            if gen_config:
+                request_body["generationConfig"] = gen_config
+            if "tools" in request_body:
+                logger.debug(f"[GATEWAY] Including {len(request_body['tools'])} tool(s) in request (from dict config)")
+        else:
+            # SDK object config — extract via attribute access.
+            # === Generation Config (goes inside "generationConfig" in the REST body) ===
+            gen_config_obj: Dict[str, Any] = {}
+            _GEN_CONFIG_ATTRS = [
+                ("temperature", "temperature"),
+                ("max_output_tokens", "maxOutputTokens"),
+                ("top_p", "topP"),
+                ("top_k", "topK"),
+                ("candidate_count", "candidateCount"),
+                ("stop_sequences", "stopSequences"),
+                ("response_mime_type", "responseMimeType"),
+                ("presence_penalty", "presencePenalty"),
+                ("frequency_penalty", "frequencyPenalty"),
+                ("seed", "seed"),
+            ]
+            for attr, camel_key in _GEN_CONFIG_ATTRS:
+                val = getattr(config, attr, None)
+                if val is not None:
+                    gen_config_obj[camel_key] = val
 
-        # response_schema may be a Pydantic model that needs serialization
-        rs = getattr(config, "response_schema", None)
-        if rs is not None:
-            serialized_rs = _serialize_sdk_object(rs)
-            if serialized_rs is not None:
-                gen_config["responseSchema"] = serialized_rs
+            # response_schema may be a Pydantic model that needs serialization
+            rs = getattr(config, "response_schema", None)
+            if rs is not None:
+                serialized_rs = _serialize_sdk_object(rs)
+                if serialized_rs is not None:
+                    gen_config_obj["responseSchema"] = serialized_rs
 
-        if gen_config:
-            request_body["generationConfig"] = gen_config
+            if gen_config_obj:
+                request_body["generationConfig"] = gen_config_obj
 
-        # === System Instruction (top-level in the REST body) ===
-        si = getattr(config, "system_instruction", None)
-        if si is not None:
-            if isinstance(si, str):
-                request_body["systemInstruction"] = {"parts": [{"text": si}]}
-            elif hasattr(si, "parts"):
-                # Content object — serialize each part
-                parts = []
-                for p in si.parts:
-                    sd = _serialize_part(p)
-                    if sd:
-                        parts.append(sd)
-                if parts:
-                    request_body["systemInstruction"] = {"parts": parts}
-            elif isinstance(si, list):
-                # List of strings or Content objects
-                parts = []
-                for item in si:
-                    if isinstance(item, str):
-                        parts.append({"text": item})
-                    elif hasattr(item, "text"):
-                        parts.append({"text": item.text})
-                    else:
-                        sd = _serialize_sdk_object(item)
+            # === System Instruction (top-level in the REST body) ===
+            si = getattr(config, "system_instruction", None)
+            if si is not None:
+                if isinstance(si, str):
+                    request_body["systemInstruction"] = {"parts": [{"text": si}]}
+                elif hasattr(si, "parts"):
+                    # Content object — serialize each part
+                    parts = []
+                    for p in si.parts:
+                        sd = _serialize_part(p)
                         if sd:
                             parts.append(sd)
-                if parts:
-                    request_body["systemInstruction"] = {"parts": parts}
-            else:
-                # Try generic serialization (dict, Pydantic, etc.)
-                serialized_si = _serialize_sdk_object(si)
-                if serialized_si:
-                    request_body["systemInstruction"] = serialized_si
+                    if parts:
+                        request_body["systemInstruction"] = {"parts": parts}
+                elif isinstance(si, list):
+                    # List of strings or Content objects
+                    parts = []
+                    for item in si:
+                        if isinstance(item, str):
+                            parts.append({"text": item})
+                        elif hasattr(item, "text"):
+                            parts.append({"text": item.text})
+                        else:
+                            sd = _serialize_sdk_object(item)
+                            if sd:
+                                parts.append(sd)
+                    if parts:
+                        request_body["systemInstruction"] = {"parts": parts}
+                else:
+                    # Try generic serialization (dict, Pydantic, etc.)
+                    serialized_si = _serialize_sdk_object(si)
+                    if serialized_si:
+                        request_body["systemInstruction"] = serialized_si
 
-        # === Tools (top-level in the REST body) ===
-        if hasattr(config, "tools") and config.tools:
-            tools_list = []
-            for tool in config.tools:
-                serialized = _serialize_sdk_object(tool)
-                if serialized:
-                    tools_list.append(serialized)
-            if tools_list:
-                request_body["tools"] = tools_list
-                logger.debug(f"[GATEWAY] Including {len(tools_list)} tool(s) in request")
+            # === Tools (top-level in the REST body) ===
+            if hasattr(config, "tools") and config.tools:
+                tools_list = []
+                for tool in config.tools:
+                    serialized = _serialize_sdk_object(tool)
+                    if serialized:
+                        tools_list.append(serialized)
+                if tools_list:
+                    request_body["tools"] = tools_list
+                    logger.debug(f"[GATEWAY] Including {len(tools_list)} tool(s) in request")
 
-        # === Tool Config (top-level in the REST body) ===
-        if hasattr(config, "tool_config") and config.tool_config:
-            serialized_tc = _serialize_sdk_object(config.tool_config)
-            if serialized_tc:
-                request_body["toolConfig"] = serialized_tc
+            # === Tool Config (top-level in the REST body) ===
+            if hasattr(config, "tool_config") and config.tool_config:
+                serialized_tc = _serialize_sdk_object(config.tool_config)
+                if serialized_tc:
+                    request_body["toolConfig"] = serialized_tc
 
-        # === Safety Settings (top-level in the REST body) ===
-        if hasattr(config, "safety_settings") and config.safety_settings:
-            serialized_ss = _serialize_sdk_object(config.safety_settings)
-            if serialized_ss:
-                request_body["safetySettings"] = serialized_ss
+            # === Safety Settings (top-level in the REST body) ===
+            if hasattr(config, "safety_settings") and config.safety_settings:
+                serialized_ss = _serialize_sdk_object(config.safety_settings)
+                if serialized_ss:
+                    request_body["safetySettings"] = serialized_ss
 
     # Build the full Vertex AI gateway URL with API path
     # The Vertex AI gateway expects: {base}/v1/projects/{p}/locations/{l}/publishers/google/models/{m}:generateContent
-    from ._google_common import build_vertexai_gateway_url
     try:
         full_gateway_url = build_vertexai_gateway_url(
             gw_settings.url, model_name, gw_settings, streaming=False,
@@ -482,63 +513,59 @@ def _handle_google_genai_gateway_call(
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"[GATEWAY] Full request body ({len(_body_bytes)} bytes): {_body_bytes[:5000].decode('utf-8', errors='replace')}")
 
+    request_headers = {**auth_headers, "Content-Type": "application/json"}
     try:
-        with httpx.Client(timeout=float(gw_settings.timeout)) as client:
-            response = client.post(
-                full_gateway_url,
-                content=_body_bytes,
-                headers={
-                    **auth_headers,
-                    "Content-Type": "application/json",
-                },
-            )
-            response.raise_for_status()
-            response_data = response.json()
-        
+        response = vertexai_gateway_post(
+            full_gateway_url, _body_bytes, request_headers, gw_settings,
+        )
+        response_data = response.json()
+
         logger.debug(f"[GATEWAY] Received native google-genai response from gateway")
         set_inspection_context(decision=Decision.allow(reasons=["Gateway handled inspection"]), done=True)
         
         # Wrap response for attribute access
         return _GoogleGenAIResponseWrapper(response_data)
         
-    except httpx.HTTPStatusError as e:
-        logger.error(f"[GATEWAY] HTTP error: {e}")
-        # Log status code and truncated body for debugging (avoid leaking sensitive data)
-        _resp_text = ""
-        try:
-            _resp_text = e.response.text[:1000] if hasattr(e.response, 'text') else ""
-            logger.error(f"[GATEWAY] HTTP {e.response.status_code} — body preview: {_resp_text}")
-        except Exception:
-            pass
-        # Detect gateway body-size corruption: the AI Defense gateway
-        # currently corrupts request bodies larger than ~2700 bytes when
-        # forwarding to Vertex AI, causing "Invalid JSON payload" errors.
-        if "Invalid JSON payload" in _resp_text:
-            logger.error(
-                "[GATEWAY] The AI Defense gateway returned 'Invalid JSON "
-                "payload'.  This is a known gateway limitation when the "
-                "request body exceeds ~2700 bytes (e.g. requests with "
-                "multiple tool declarations).  Workaround: use "
-                "llm_integration_mode=api until the gateway team resolves "
-                "this issue."
-            )
-        if gw_settings.fail_open:
-            # fail_open=True: allow request to proceed by re-raising original error
-            logger.warning(f"[GATEWAY] fail_open=True, re-raising original HTTP error for caller to handle")
-            set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
-            raise  # Re-raise original HTTP error, not SecurityPolicyError
-        else:
-            # fail_open=False: block the request with SecurityPolicyError
-            raise SecurityPolicyError(
-                Decision.block(reasons=["Gateway unavailable"]),
-                f"Gateway HTTP error: {e}"
-            )
     except Exception as e:
-        logger.error(f"[GATEWAY] Error: {e}")
+        import httpx as _httpx
+        if isinstance(e, _httpx.HTTPStatusError):
+            logger.error(f"[GATEWAY] HTTP error: {e}")
+            _resp_text = ""
+            try:
+                _resp_text = e.response.text[:1000] if hasattr(e.response, "text") else ""
+                logger.error(f"[GATEWAY] HTTP {e.response.status_code} — body preview: {_resp_text}")
+            except Exception:
+                pass
+            # Detect gateway body-size corruption
+            if "Invalid JSON payload" in _resp_text:
+                logger.error(
+                    "[GATEWAY] The AI Defense gateway returned 'Invalid JSON "
+                    "payload'.  This is a known gateway limitation when the "
+                    "request body exceeds ~2700 bytes (e.g. requests with "
+                    "multiple tool declarations).  Workaround: use "
+                    "llm_integration_mode=api until the gateway team resolves "
+                    "this issue."
+                )
+            # Detect multi-turn 500: known gateway bug (Issue #4)
+            if e.response.status_code == 500 and _has_multi_turn_contents(contents_list):
+                logger.error(
+                    "[GATEWAY] HTTP 500 on multi-turn request (contents has %d messages). "
+                    "This is a known gateway bug: the AI Defense gateway returns 500 on "
+                    "any multi-turn Vertex AI request (including functionCall/functionResponse). "
+                    "See examples/agentsec/KNOWN_ISSUES.md. Workaround: use llm_integration_mode=api.",
+                    len(contents_list),
+                )
+        else:
+            logger.error(f"[GATEWAY] Error: {e}")
         if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
-            raise  # Re-raise original error
+            raise
+        if isinstance(e, _httpx.HTTPStatusError):
+            raise SecurityPolicyError(
+                Decision.block(reasons=["Gateway unavailable"]),
+                f"Gateway HTTP error: {e}",
+            )
         raise
 
 
@@ -787,6 +814,10 @@ class _FunctionCallWrapper:
         self._data = data
 
     @property
+    def id(self) -> Optional[str]:
+        return self._data.get("id")
+
+    @property
     def name(self) -> str:
         return self._data.get("name", "")
 
@@ -795,7 +826,7 @@ class _FunctionCallWrapper:
         return self._data.get("args", {})
 
     def __repr__(self):
-        return f"FunctionCall(name={self.name!r}, args={self.args!r})"
+        return f"FunctionCall(id={self.id!r}, name={self.name!r}, args={self.args!r})"
 
 
 class _FunctionResponseWrapper:
@@ -1027,6 +1058,151 @@ def _wrap_generate_content(wrapped, instance, args, kwargs):
     return response
 
 
+def _wrap_generate_content_stream(wrapped, instance, args, kwargs):
+    """
+    Wrapper for Models.generate_content_stream().
+
+    For API mode: pre-inspects the request, calls the original streaming
+    method, and wraps the returned iterator in GoogleGenAIStreamingWrapper
+    so that the complete response is inspected after the stream finishes.
+
+    For Gateway mode: routes through the AI Defense Gateway as a
+    non-streaming call and yields the full response as a single chunk.
+    """
+    model = kwargs.get("model")
+    if model is None and args:
+        model = args[0]
+    model_name = _extract_model_name(model)
+
+    set_inspection_context(done=False)
+    if not _should_inspect():
+        logger.debug("[PATCHED CALL] google-genai.generate_content_stream - inspection skipped")
+        return wrapped(*args, **kwargs)
+
+    contents = kwargs.get("contents")
+    if contents is None and len(args) > 1:
+        contents = args[1]
+
+    config = kwargs.get("config")
+
+    normalized = _normalize_genai_contents(contents)
+    metadata = get_inspection_context().metadata
+    metadata["provider"] = "google_genai"
+    metadata["model"] = model_name
+
+    mode = _state.get_llm_mode()
+    integration_mode = _state.get_llm_integration_mode()
+    logger.debug("╔══════════════════════════════════════════════════════════════")
+    logger.debug(f"║ [PATCHED] LLM CALL (stream): {model_name}")
+    logger.debug(f"║ Operation: google-genai.generate_content_stream | LLM Mode: {mode} | Integration: {integration_mode}")
+    logger.debug("╚══════════════════════════════════════════════════════════════")
+
+    # Gateway mode
+    try:
+        gw_settings = resolve_gateway_settings("google_genai")
+    except SecurityPolicyError:
+        logger.warning(
+            "[PATCHED CALL] google-genai.generate_content_stream - No gateway "
+            "configured for 'google_genai', trying 'vertexai' gateway as fallback"
+        )
+        gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
+        logger.debug("[PATCHED CALL] google-genai.generate_content_stream - Gateway mode - routing to AI Defense Gateway")
+        gateway_response = _handle_google_genai_gateway_call(
+            model_name=model_name,
+            contents=contents,
+            config=config,
+            gw_settings=gw_settings,
+        )
+        return iter([gateway_response])
+
+    # API mode: pre-inspect, then wrap the stream for post-inspection
+    if normalized:
+        logger.debug(f"[PATCHED CALL] google-genai.generate_content_stream - Request inspection ({len(normalized)} messages)")
+        inspector = _get_inspector()
+        decision = inspector.inspect_conversation(normalized, metadata)
+        logger.debug(f"[PATCHED CALL] google-genai.generate_content_stream - Request decision: {decision.action}")
+        set_inspection_context(decision=decision)
+        _enforce_decision(decision)
+
+    logger.debug("[PATCHED CALL] google-genai.generate_content_stream - calling original method")
+    original_stream = wrapped(*args, **kwargs)
+    return GoogleGenAIStreamingWrapper(original_stream, normalized or [], metadata)
+
+
+async def _wrap_generate_content_stream_async(wrapped, instance, args, kwargs):
+    """
+    Async wrapper for AsyncModels.generate_content_stream().
+
+    Same strategy as the sync variant but yields from the async iterator.
+    """
+    model = kwargs.get("model")
+    if model is None and args:
+        model = args[0]
+    model_name = _extract_model_name(model)
+
+    set_inspection_context(done=False)
+    if not _should_inspect():
+        logger.debug("[PATCHED CALL] google-genai.async.generate_content_stream - inspection skipped")
+        return await wrapped(*args, **kwargs)
+
+    contents = kwargs.get("contents")
+    if contents is None and len(args) > 1:
+        contents = args[1]
+
+    config = kwargs.get("config")
+
+    normalized = _normalize_genai_contents(contents)
+    metadata = get_inspection_context().metadata
+    metadata["provider"] = "google_genai"
+    metadata["model"] = model_name
+
+    mode = _state.get_llm_mode()
+    integration_mode = _state.get_llm_integration_mode()
+    logger.debug("╔══════════════════════════════════════════════════════════════")
+    logger.debug(f"║ [PATCHED] LLM CALL (async stream): {model_name}")
+    logger.debug(f"║ Operation: google-genai.async.generate_content_stream | LLM Mode: {mode} | Integration: {integration_mode}")
+    logger.debug("╚══════════════════════════════════════════════════════════════")
+
+    # Gateway mode
+    try:
+        gw_settings = resolve_gateway_settings("google_genai")
+    except SecurityPolicyError:
+        logger.warning(
+            "[PATCHED CALL] google-genai.async.generate_content_stream - No gateway "
+            "configured for 'google_genai', trying 'vertexai' gateway as fallback"
+        )
+        gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
+        logger.debug("[PATCHED CALL] google-genai.async.generate_content_stream - Gateway mode")
+        import asyncio
+        gateway_response = await asyncio.to_thread(
+            _handle_google_genai_gateway_call,
+            model_name=model_name,
+            contents=contents,
+            config=config,
+            gw_settings=gw_settings,
+        )
+
+        async def _single_chunk():
+            yield gateway_response
+
+        return _single_chunk()
+
+    # API mode: pre-inspect, then wrap the stream
+    if normalized:
+        logger.debug(f"[PATCHED CALL] google-genai.async.generate_content_stream - Request inspection ({len(normalized)} messages)")
+        inspector = _get_inspector()
+        decision = await inspector.ainspect_conversation(normalized, metadata)
+        logger.debug(f"[PATCHED CALL] google-genai.async.generate_content_stream - Request decision: {decision.action}")
+        set_inspection_context(decision=decision)
+        _enforce_decision(decision)
+
+    logger.debug("[PATCHED CALL] google-genai.async.generate_content_stream - calling original method")
+    original_stream = await wrapped(*args, **kwargs)
+    return AsyncGoogleGenAIStreamingWrapper(original_stream, normalized or [], metadata)
+
+
 async def _wrap_generate_content_async(wrapped, instance, args, kwargs):
     """
     Async wrapper for Models.generate_content() when called with async client.
@@ -1116,8 +1292,9 @@ def patch_google_genai() -> bool:
     """
     Patch google-genai SDK for automatic inspection.
     
-    Patches the Models.generate_content() method to intercept
-    all LLM calls for AI Defense inspection.
+    Patches Models.generate_content(), Models.generate_content_stream(),
+    and their async counterparts to intercept all LLM calls for AI Defense
+    inspection.
     
     Returns:
         True if patching was successful, False otherwise
@@ -1161,6 +1338,28 @@ def patch_google_genai() -> bool:
         except Exception as e:
             logger.debug(f"AsyncModels.generate_content not found or failed to patch: {e}")
         
+        # Patch streaming variants so frameworks that use streaming
+        # (e.g. Strands) are also inspected.
+        try:
+            wrapt.wrap_function_wrapper(
+                "google.genai.models",
+                "Models.generate_content_stream",
+                _wrap_generate_content_stream,
+            )
+            logger.debug("Patched google.genai.models.Models.generate_content_stream")
+        except Exception as e:
+            logger.debug(f"Models.generate_content_stream not found or failed to patch: {e}")
+
+        try:
+            wrapt.wrap_function_wrapper(
+                "google.genai.models",
+                "AsyncModels.generate_content_stream",
+                _wrap_generate_content_stream_async,
+            )
+            logger.debug("Patched google.genai.models.AsyncModels.generate_content_stream")
+        except Exception as e:
+            logger.debug(f"AsyncModels.generate_content_stream not found or failed to patch: {e}")
+
         mark_patched("google_genai")
         logger.info("google-genai patched successfully")
         return True

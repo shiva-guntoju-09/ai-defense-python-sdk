@@ -63,7 +63,9 @@ INTEGRATION_MODE="${AGENTSEC_LLM_INTEGRATION_MODE:-api}"
 API_MODE="${AGENTSEC_API_MODE_LLM:-monitor}"
 API_ENDPOINT="${AI_DEFENSE_API_MODE_LLM_ENDPOINT:-}"
 API_KEY="${AI_DEFENSE_API_MODE_LLM_API_KEY:-}"
-GOOGLE_AI_SDK="${GOOGLE_AI_SDK:-vertexai}"
+# SDK to use in the deployed container.
+# Priority: GOOGLE_AI_SDK_DEPLOYMENT > GOOGLE_AI_SDK > google_genai
+GOOGLE_AI_SDK="${GOOGLE_AI_SDK_DEPLOYMENT:-${GOOGLE_AI_SDK:-google_genai}}"
 
 echo "=============================================="
 echo "Deploying to Cloud Run with AI Defense"

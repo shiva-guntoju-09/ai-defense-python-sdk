@@ -22,10 +22,13 @@ from dotenv import load_dotenv
 
 # Try multiple .env locations in order of priority:
 # 1. /app/.env (container deployment)
-# 2. examples/.env (local development)
-# 3. agentcore/.env (fallback)
+# 2. Lambda task root (Lambda deployment)
+# 3. examples/.env (local development)
+# 4. agentcore/.env (fallback)
+_lambda_task_root = os.environ.get("LAMBDA_TASK_ROOT", "")
 _env_paths = [
     Path("/app/.env"),  # Container deployment
+    *([ Path(_lambda_task_root) / ".env" ] if _lambda_task_root else []),  # Lambda deployment
     Path(__file__).parent.parent.parent.parent / ".env",  # examples/.env
     Path(__file__).parent.parent / ".env",  # agentcore/.env
 ]
@@ -35,14 +38,22 @@ for _env_path in _env_paths:
         load_dotenv(_env_path)
         break
 
+# In Lambda, clear profile-based AWS auth vars loaded from .env.
+# Lambda uses its IAM execution role automatically; AWS_PROFILE would cause
+# "ProfileNotFound" since ~/.aws/credentials doesn't exist in Lambda.
+if _lambda_task_root:
+    for _var in ("AWS_PROFILE", "AWS_AUTH_METHOD"):
+        os.environ.pop(_var, None)
+
 # =============================================================================
 # Configure agentsec via agentsec.yaml
 # =============================================================================
 from aidefense.runtime import agentsec
 
-# Resolve agentsec.yaml path (container vs local development)
+# Resolve agentsec.yaml path (container vs Lambda vs local development)
 _yaml_paths = [
     Path("/app/agentsec.yaml"),  # Container deployment
+    *([ Path(_lambda_task_root) / "agentsec.yaml" ] if _lambda_task_root else []),  # Lambda deployment
     Path(__file__).parent.parent.parent.parent / "agentsec.yaml",  # examples/agentsec/agentsec.yaml
 ]
 

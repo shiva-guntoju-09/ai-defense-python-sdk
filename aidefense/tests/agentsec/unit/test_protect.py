@@ -304,3 +304,88 @@ class TestProtect:
 
         from aidefense.runtime.agentsec._state import get_gw_llm_mode
         assert get_gw_llm_mode() == "on"
+
+    def test_protect_pool_kwargs(self):
+        """Test protect() with pool kwargs stores values in state."""
+        protect(pool_max_connections=50, pool_max_keepalive=10)
+
+        from aidefense.runtime.agentsec._state import (
+            get_pool_max_connections,
+            get_pool_max_keepalive,
+        )
+        assert get_pool_max_connections() == 50
+        assert get_pool_max_keepalive() == 10
+
+    def test_protect_pool_defaults_none(self):
+        """Test protect() without pool kwargs leaves state as None."""
+        protect()
+
+        from aidefense.runtime.agentsec._state import (
+            get_pool_max_connections,
+            get_pool_max_keepalive,
+        )
+        assert get_pool_max_connections() is None
+        assert get_pool_max_keepalive() is None
+
+    def test_protect_pool_from_yaml(self, tmp_path):
+        """Test protect() reads pool settings from YAML when kwargs are None."""
+        yaml_file = tmp_path / "agentsec.yaml"
+        yaml_file.write_text(
+            "pool_max_connections: 200\n"
+            "pool_max_keepalive: 30\n"
+        )
+
+        protect(config=str(yaml_file))
+
+        from aidefense.runtime.agentsec._state import (
+            get_pool_max_connections,
+            get_pool_max_keepalive,
+        )
+        assert get_pool_max_connections() == 200
+        assert get_pool_max_keepalive() == 30
+
+    def test_protect_pool_kwargs_override_yaml(self, tmp_path):
+        """Test protect() kwargs override YAML pool values."""
+        yaml_file = tmp_path / "agentsec.yaml"
+        yaml_file.write_text(
+            "pool_max_connections: 200\n"
+            "pool_max_keepalive: 30\n"
+        )
+
+        protect(config=str(yaml_file), pool_max_connections=50, pool_max_keepalive=5)
+
+        from aidefense.runtime.agentsec._state import (
+            get_pool_max_connections,
+            get_pool_max_keepalive,
+        )
+        assert get_pool_max_connections() == 50
+        assert get_pool_max_keepalive() == 5
+
+    def test_protect_pool_env_var_yaml(self, tmp_path, monkeypatch):
+        """Test protect() handles env var substitution for pool YAML values."""
+        monkeypatch.setenv("TEST_POOL_CONN", "150")
+        monkeypatch.setenv("TEST_POOL_KEEP", "25")
+        yaml_file = tmp_path / "agentsec.yaml"
+        yaml_file.write_text(
+            "pool_max_connections: ${TEST_POOL_CONN}\n"
+            "pool_max_keepalive: ${TEST_POOL_KEEP}\n"
+        )
+
+        protect(config=str(yaml_file))
+
+        from aidefense.runtime.agentsec._state import (
+            get_pool_max_connections,
+            get_pool_max_keepalive,
+        )
+        assert get_pool_max_connections() == 150
+        assert get_pool_max_keepalive() == 25
+
+    def test_protect_pool_invalid_max_connections(self):
+        """Test protect() with invalid pool_max_connections raises."""
+        with pytest.raises(ConfigurationError, match="pool_max_connections"):
+            protect(pool_max_connections=0)
+
+    def test_protect_pool_invalid_max_keepalive(self):
+        """Test protect() with invalid pool_max_keepalive raises."""
+        with pytest.raises(ConfigurationError, match="pool_max_keepalive"):
+            protect(pool_max_keepalive=-1)

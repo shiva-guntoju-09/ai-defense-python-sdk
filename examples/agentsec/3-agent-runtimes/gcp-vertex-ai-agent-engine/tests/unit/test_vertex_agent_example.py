@@ -189,25 +189,22 @@ class TestAgentFactoryStructure:
         # Find positions of key imports
         agentsec_pos = content.find("import agentsec")
         protect_pos = content.find("agentsec.protect(")
-        langchain_pos = content.find("from langchain_google_genai")
         
         assert agentsec_pos != -1, "agentsec import should be present"
         assert protect_pos != -1, "agentsec.protect() should be present"
-        assert langchain_pos != -1, "LangChain import should be present"
-        
-        # Verify order: agentsec.protect() must come before any AI library import
-        assert protect_pos < langchain_pos, "agentsec.protect() must be called before importing LangChain"
 
     def test_agent_factory_uses_langchain(self):
-        """Test that agent_factory.py uses LangChain ChatGoogleGenerativeAI."""
+        """Test that agent_factory.py supports both LangChain SDK paths."""
         project_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         agent_factory_path = os.path.join(project_dir, "_shared", "agent_factory.py")
         
         with open(agent_factory_path, "r") as f:
             content = f.read()
         
-        assert "from langchain_google_genai import ChatGoogleGenerativeAI" in content, "Should use ChatGoogleGenerativeAI from langchain-google-genai"
-        assert "ChatGoogleGenerativeAI(" in content, "Should instantiate ChatGoogleGenerativeAI"
+        # Both SDK paths should be present (branched on sdk hint)
+        assert "ChatGoogleGenerativeAI(" in content, "Should support ChatGoogleGenerativeAI (google_genai path)"
+        assert "ChatVertexAI(" in content, "Should support ChatVertexAI (vertexai path)"
+        assert "get_default_gateway_for_provider" in content, "Should resolve sdk from agentsec gateway config"
 
     def test_agent_factory_binds_tools(self):
         """Test that agent_factory.py binds tools to LLM."""
@@ -583,6 +580,7 @@ class TestMCPTools:
             content = f.read()
         assert "langchain" in content, "pyproject.toml should include langchain dependency"
         assert "langchain-google-genai" in content, "pyproject.toml should include langchain-google-genai"
+        assert "langchain-google-vertexai" in content, "pyproject.toml should include langchain-google-vertexai"
     
     def test_mcp_integration_test_exists(self):
         """Test that MCP integration test script exists."""

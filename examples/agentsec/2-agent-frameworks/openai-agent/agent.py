@@ -82,7 +82,6 @@ from mcp import ClientSession
 # MCP Tool Definition
 # =============================================================================
 
-_mcp_session = None
 _mcp_url = None
 
 
@@ -98,7 +97,7 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     result = await session.call_tool(tool_name, arguments)
-                    return result.content[0].text if result.content else "No answer"
+                    return next((c.text for c in (result.content or []) if hasattr(c, "text")), "No answer")
         
         # Create a new event loop in this thread
         loop = asyncio.new_event_loop()
@@ -312,7 +311,7 @@ class OpenAIAgent:
 
 async def setup_mcp():
     """Set up MCP connection if configured."""
-    global _mcp_session, _mcp_url
+    global _mcp_url
     
     mcp_url = os.getenv("MCP_SERVER_URL")
     _mcp_url = mcp_url
@@ -328,16 +327,15 @@ async def setup_mcp():
         read, write, _ = await mcp_context.__aenter__()
         logger.debug("MCP context entered")
         session_context = ClientSession(read, write)
-        _mcp_session = await session_context.__aenter__()
+        session = await session_context.__aenter__()
         logger.debug("MCP session created")
-        await _mcp_session.initialize()
+        await session.initialize()
         logger.debug("MCP session initialized")
-        tools_list = await _mcp_session.list_tools()
+        tools_list = await session.list_tools()
         logger.info(f"MCP connected. Tools: {[t.name for t in tools_list.tools]}")
         return mcp_context, session_context
     except Exception as e:
         logger.warning(f"MCP connection failed: {e}")
-        _mcp_session = None
         # Keep _mcp_url set so tools can still attempt fresh connections
         # (MCP server may be temporarily unavailable or become available later)
         return None, None

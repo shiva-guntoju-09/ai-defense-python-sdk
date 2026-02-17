@@ -17,17 +17,7 @@ from langchain_core.tools import tool
 
 @tool
 def check_service_health(service_name: str) -> str:
-    """
-    Check the health status of a service.
-    
-    Use this tool when you need to check if a service is running properly.
-    
-    Args:
-        service_name: Name of the service to check (e.g., 'payments', 'auth', 'database')
-        
-    Returns:
-        A string describing the health status of the service
-    """
+    """Check the health status of a service."""
     # Demo implementation - would connect to real monitoring in production
     statuses = ["healthy", "healthy", "healthy", "degraded", "unhealthy"]
     status = random.choice(statuses)
@@ -48,18 +38,7 @@ def check_service_health(service_name: str) -> str:
 
 @tool
 def get_recent_logs(service_name: str, limit: int = 10) -> str:
-    """
-    Get recent log entries for a service.
-    
-    Use this tool when you need to see recent logs or troubleshoot issues.
-    
-    Args:
-        service_name: Name of the service to get logs from
-        limit: Maximum number of log entries to return (default: 10)
-        
-    Returns:
-        A string containing recent log entries
-    """
+    """Get recent log entries for a service."""
     log_levels = ["INFO", "INFO", "INFO", "WARN", "ERROR"]
     messages = [
         "Request processed successfully",
@@ -89,19 +68,7 @@ def get_recent_logs(service_name: str, limit: int = 10) -> str:
 
 @tool
 def calculate_capacity(current_usage: float, growth_rate: float, target_utilization: float = 0.7) -> str:
-    """
-    Calculate capacity planning metrics and provide recommendations.
-    
-    Use this tool for capacity planning and resource scaling decisions.
-    
-    Args:
-        current_usage: Current resource usage as a decimal (0-1, e.g., 0.5 for 50%)
-        growth_rate: Monthly growth rate as a decimal (e.g., 0.1 for 10% monthly growth)
-        target_utilization: Target utilization threshold (default: 0.7 for 70%)
-        
-    Returns:
-        A string with capacity planning analysis and recommendations
-    """
+    """Calculate capacity planning metrics and scaling recommendations."""
     if current_usage >= target_utilization:
         months_until_full = 0
     else:

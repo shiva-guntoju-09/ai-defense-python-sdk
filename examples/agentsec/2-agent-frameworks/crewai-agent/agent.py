@@ -99,7 +99,7 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict, max_retries: int = 3) -
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     result = await session.call_tool(tool_name, arguments)
-                    return result.content[0].text if result.content else "No answer"
+                    return next((c.text for c in (result.content or []) if hasattr(c, "text")), "No answer")
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

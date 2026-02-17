@@ -29,7 +29,7 @@
 #   AGENTSEC_LLM_INTEGRATION_MODE       - "api" or "gateway"
 #   AI_DEFENSE_API_MODE_LLM_ENDPOINT    - AI Defense API endpoint
 #   AI_DEFENSE_API_MODE_LLM_API_KEY     - AI Defense API key
-#   GOOGLE_AI_SDK                       - "vertexai" (default) or "google_genai"
+#   GOOGLE_AI_SDK                       - "google_genai" (default) or "vertexai" (set via agentsec.yaml sdk field)
 #
 # =============================================================================
 set -euo pipefail
@@ -146,7 +146,7 @@ show_help() {
     echo "                    Requires: gcloud CLI, Docker, Cloud Run/GKE permissions"
     echo ""
     echo "Environment:"
-    echo "  GOOGLE_AI_SDK     SDK to use: 'vertexai' (default) or 'google_genai'"
+    echo "  GOOGLE_AI_SDK     SDK to use: 'google_genai' (default) or 'vertexai'"
     echo "  MCP_SERVER_URL    MCP server URL (default: https://mcp.deepwiki.com/mcp)"
     echo ""
     echo "Examples:"
@@ -157,7 +157,7 @@ show_help() {
     echo "  $0 --mcp-only                       # Run only MCP tests"
     echo "  $0 --deploy --mode cloud-run --api  # Deploy Cloud Run, API mode only"
     echo "  $0 --deploy --mode gke --cleanup    # Deploy GKE and cleanup after"
-    echo "  GOOGLE_AI_SDK=google_genai $0       # Test with modern google-genai SDK"
+    echo "  GOOGLE_AI_SDK=vertexai $0           # Test with vertexai SDK (Agent Engine safe)"
 }
 
 # =============================================================================
@@ -414,7 +414,7 @@ fi
 echo ""
 echo "Project:           ${GOOGLE_CLOUD_PROJECT:?Error: GOOGLE_CLOUD_PROJECT not set}"
 echo "Location:          ${GOOGLE_CLOUD_LOCATION:-us-central1}"
-echo "SDK:               ${GOOGLE_AI_SDK:-vertexai}"
+echo "SDK:               ${GOOGLE_AI_SDK:-google_genai}"
 echo "Test mode:         $([ "$LOCAL_ONLY" = true ] && echo "local" || echo "deploy")"
 echo "Deploy modes:      ${DEPLOY_MODES_TO_RUN[*]}"
 echo "Integration modes: ${INTEGRATION_MODES_TO_RUN[*]}"
@@ -996,7 +996,7 @@ done
 printf "║  %-22s ${BOLD}%dm %ds${NC}                                    ║\n" "Total Runtime:" "$TOTAL_DURATION_MIN" "$TOTAL_DURATION_SEC"
 echo "╠══════════════════════════════════════════════════════════════════════╣"
 echo "║  Protection Verified:                                                ║"
-echo "║    • LLM Request/Response: agentsec patches google_genai             ║"
+echo "║    • LLM Request/Response: agentsec patches vertexai or google_genai (per sdk)║"
 echo "║    • MCP Request/Response: agentsec patches mcp.ClientSession       ║"
 echo "╚══════════════════════════════════════════════════════════════════════╝"
 echo ""

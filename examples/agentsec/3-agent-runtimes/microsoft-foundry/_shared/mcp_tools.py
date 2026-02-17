@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # MCP configuration - refreshed on get_mcp_tools() call
 _mcp_url = None
-_mcp_timeout = 120  # Default timeout in seconds
+_mcp_timeout = 60  # Default timeout in seconds
 
 
 def _get_mcp_config():
@@ -77,7 +77,7 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
                 await session.initialize()
                 # This call is INTERCEPTED by agentsec for AI Defense inspection!
                 result = await session.call_tool(tool_name, arguments)
-                return result.content[0].text if result.content else "No answer"
+                return next((c.text for c in (result.content or []) if hasattr(c, "text")), "No answer")
     
     # Handle event loop management carefully for different execution contexts
     # Azure Functions and Azure ML may have existing event loops

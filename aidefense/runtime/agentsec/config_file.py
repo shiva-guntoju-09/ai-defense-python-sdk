@@ -27,6 +27,8 @@ _KNOWN_TOP_KEYS = {
     "gateway_mode",
     "api_mode",
     "logging",
+    "pool_max_connections",
+    "pool_max_keepalive",
 }
 
 

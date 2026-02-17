@@ -793,7 +793,10 @@ Three deployment modes for GCP Vertex AI agents:
 
 **Google AI SDK:**
 
-The GCP Vertex AI runtime uses `ChatGoogleGenerativeAI` from the `langchain-google-genai` package (which uses the modern `google-genai` SDK internally). This SDK is intercepted by the agentsec `google_genai` patcher. The older `ChatVertexAI` class (from `langchain-google-vertexai`) uses a GAPIC client that cannot be patched and is **not supported**.
+The GCP Vertex AI runtime supports two LangChain LLM classes, selected by the `sdk` field on the vertexai gateway in `agentsec.yaml` (resolved from `${GOOGLE_AI_SDK}`):
+
+- **`google_genai`** (default): `ChatGoogleGenerativeAI` from `langchain-google-genai`. Uses `google.genai.Client` internally, patched by agentsec's `google_genai` patcher. Recommended forward path for local development.
+- **`vertexai`**: `ChatVertexAI` from `langchain-google-vertexai`. Uses `vertexai.GenerativeModel` internally, patched by agentsec's `vertexai` patcher. Required for Agent Engine deployments where the managed SA lacks the `generative-language` scope.
 
 ```bash
 cd 3-agent-runtimes/gcp-vertex-ai-agent-engine
@@ -824,22 +827,23 @@ Three deployment modes for Microsoft Azure AI Foundry agents:
 cd 3-agent-runtimes/microsoft-foundry
 poetry install
 
-# Run DEPLOY tests (default for this script) - deploys to Azure and tests real endpoints
-./tests/integration/test-all-modes.sh              # All modes, deploy to Azure
-./tests/integration/test-all-modes.sh agent-app --api  # Agent app, API only
-
-# Run LOCAL tests - no Azure deployment needed
-./tests/integration/test-all-modes.sh --local      # All modes, local
+# Run LOCAL tests (default) - no Azure deployment needed
+./tests/integration/test-all-modes.sh              # All modes, local
+./tests/integration/test-all-modes.sh --local      # Explicit local mode
 ./tests/integration/test-all-modes.sh --local --api # API mode only, local
+
+# Run DEPLOY tests - deploys to Azure and tests real endpoints
+./tests/integration/test-all-modes.sh --deploy     # All modes, deploy to Azure
+./tests/integration/test-all-modes.sh --deploy agent-app --api  # Agent app, API only
 ```
 
-> **Note**: Unlike Bedrock and GCP (which default to local), Foundry's test script defaults to deploy mode since it tests against already-deployed Azure endpoints.
+> **Note**: All three runtimes default to local mode (`--local`). Use `--deploy` to run against real cloud endpoints.
 
 ### Runtime Integration Tests
 
 There are two ways to run runtime integration tests:
 
-**Option 1: Top-level script** (recommended — uses each runtime's own default mode)
+**Option 1: Top-level script** (recommended — defaults to local for all runtimes)
 
 ```bash
 # From the repo root
@@ -856,7 +860,7 @@ cd /path/to/ai-defense-python-sdk
 ```bash
 cd examples/agentsec/3-agent-runtimes
 
-# Default: --deploy for AgentCore/Vertex AI, --local for Foundry
+# Wrapper default: --deploy for AgentCore/Vertex AI, --local for Foundry
 ./run-all-integration-tests.sh                     # Default test mode
 
 # Override modes
@@ -871,7 +875,7 @@ cd examples/agentsec/3-agent-runtimes
 ./run-all-integration-tests.sh --quick             # Quick tests for all runtimes
 ```
 
-> **Note**: Default test modes differ by script. The top-level `scripts/run-integration-tests.sh` uses each runtime's own default (local for Bedrock/Vertex AI, deploy for Foundry). The `run-all-integration-tests.sh` in `3-agent-runtimes/` inverts this (deploy for Bedrock/Vertex AI, local for Foundry).
+> **Note**: Each runtime's own `test-all-modes.sh` defaults to `--local`. The wrapper `run-all-integration-tests.sh` in `3-agent-runtimes/` overrides this for AgentCore and Vertex AI (using `--deploy`), while keeping `--local` for Foundry. Use `--local` or `--deploy` to override for all runtimes.
 
 ---
 

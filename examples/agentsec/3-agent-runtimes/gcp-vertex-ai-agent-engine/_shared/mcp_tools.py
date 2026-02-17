@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # MCP configuration - refreshed on get_mcp_tools() call
 _mcp_url = None
-_mcp_timeout = 120  # Default timeout in seconds
+_mcp_timeout = 60  # Default timeout in seconds
 
 
 def _get_mcp_config():
@@ -75,7 +75,7 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
                 await session.initialize()
                 # This call is INTERCEPTED by agentsec for AI Defense inspection!
                 result = await session.call_tool(tool_name, arguments)
-                return result.content[0].text if result.content else "No answer"
+                return next((c.text for c in (result.content or []) if hasattr(c, "text")), "No answer")
     
     # Use asyncio.run() for cleaner event loop management
     try:
@@ -93,20 +93,7 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
 
 @tool
 def fetch_url(url: str) -> str:
-    """Fetch the contents of a URL using an external MCP server.
-    
-    Use this tool when you need to fetch webpage content, read a website,
-    or get information from a URL. This tool connects to an MCP server
-    that can retrieve webpage contents.
-    
-    The MCP call is protected by AI Defense for both request and response.
-    
-    Args:
-        url: The URL to fetch (e.g., 'https://example.com', 'https://news.ycombinator.com')
-    
-    Returns:
-        The text content of the URL
-    """
+    """Fetch the contents of a URL via an MCP server."""
     mcp_url, _ = _get_mcp_config()
     logger.info(f"fetch_url called: url={url}")
     

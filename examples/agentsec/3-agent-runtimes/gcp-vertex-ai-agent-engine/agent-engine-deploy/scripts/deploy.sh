@@ -14,6 +14,9 @@
 # Prerequisites:
 #   - gcloud CLI installed and authenticated
 #   - Vertex AI API enabled: gcloud services enable aiplatform.googleapis.com
+#   - Generative Language API enabled: gcloud services enable generativelanguage.googleapis.com
+#     (Vertex AI delegates Gemini calls to this backend; without it the agent gets
+#      403 ACCESS_TOKEN_SCOPE_INSUFFICIENT from generativelanguage.googleapis.com)
 #   - Python 3.11+ with google-cloud-aiplatform package
 #
 # Usage:
@@ -117,6 +120,10 @@ fi
 # Note: GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are reserved and automatically provided by Agent Engine
 ENV_VARS_JSON="{"
 ENV_VARS_JSON="${ENV_VARS_JSON}\"GOOGLE_GENAI_USE_VERTEXAI\": \"True\","
+# SDK to use in the deployed container.
+# Priority: GOOGLE_AI_SDK_DEPLOYMENT > GOOGLE_AI_SDK > google_genai
+GOOGLE_AI_SDK="${GOOGLE_AI_SDK_DEPLOYMENT:-${GOOGLE_AI_SDK:-google_genai}}"
+ENV_VARS_JSON="${ENV_VARS_JSON}\"GOOGLE_AI_SDK\": \"${GOOGLE_AI_SDK}\","
 # Note: agentsec configuration (integration modes, gateway URLs, API keys, etc.)
 # is now loaded from agentsec.yaml at runtime. Only secrets referenced by the YAML
 # via ${VAR_NAME} and non-agentsec env vars need to be passed here.

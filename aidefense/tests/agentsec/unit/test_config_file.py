@@ -281,3 +281,45 @@ gateway_mode:
         with pytest.raises(ConfigurationError, match="MCP_OAUTH_UNSET_CID"):
             load_config_file(path)
         os.unlink(path)
+
+    def test_pool_params_parsed_as_integers(self):
+        """pool_max_connections and pool_max_keepalive are parsed as YAML integers."""
+        content = """\
+pool_max_connections: 50
+pool_max_keepalive: 10
+"""
+        path = self._write_yaml(content)
+        result = load_config_file(path)
+        assert result["pool_max_connections"] == 50
+        assert result["pool_max_keepalive"] == 10
+        assert isinstance(result["pool_max_connections"], int)
+        assert isinstance(result["pool_max_keepalive"], int)
+        os.unlink(path)
+
+    def test_pool_params_no_unknown_key_warning(self, caplog):
+        """pool_max_connections and pool_max_keepalive are known keys (no warning)."""
+        content = """\
+pool_max_connections: 200
+pool_max_keepalive: 30
+"""
+        path = self._write_yaml(content)
+        import logging
+        with caplog.at_level(logging.WARNING, logger="aidefense.runtime.agentsec.config_file"):
+            load_config_file(path)
+        assert "Unknown top-level key" not in caplog.text
+        os.unlink(path)
+
+    def test_pool_params_env_var_substitution(self, monkeypatch):
+        """pool_max_connections from ${VAR} is a string after substitution."""
+        monkeypatch.setenv("MY_POOL_CONN", "75")
+        monkeypatch.setenv("MY_POOL_KEEP", "15")
+        content = """\
+pool_max_connections: ${MY_POOL_CONN}
+pool_max_keepalive: ${MY_POOL_KEEP}
+"""
+        path = self._write_yaml(content)
+        result = load_config_file(path)
+        # After env var substitution, values are strings — caller must cast to int
+        assert result["pool_max_connections"] == "75"
+        assert result["pool_max_keepalive"] == "15"
+        os.unlink(path)

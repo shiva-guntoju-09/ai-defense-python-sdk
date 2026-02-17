@@ -130,7 +130,7 @@ def fetch_url(url: str) -> str:
     async def _call_mcp():
         start = time.time()
         result = await _mcp_session.call_tool('fetch', {'url': url})
-        content = result.content[0].text if result.content else "No content"
+        content = next((c.text for c in (result.content or []) if hasattr(c, "text")), "No content")
         elapsed = time.time() - start
         logger.info(f"Got response ({len(content)} chars) in {elapsed:.1f}s")
         return content

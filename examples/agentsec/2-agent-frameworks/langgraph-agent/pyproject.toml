@@ -24,7 +24,7 @@ langchain-aws = ">=0.2.0"
 # LangChain OpenAI integration (ChatOpenAI, AzureChatOpenAI)
 langchain-openai = ">=0.2.0"
 
-# LangChain Google Vertex AI integration (ChatVertexAI - deprecated)
+# LangChain Google Vertex AI integration (ChatVertexAI -- used when sdk=vertexai)
 langchain-google-vertexai = ">=2.0.0"
 
 # LangChain Google GenAI integration (ChatGoogleGenerativeAI - recommended)

@@ -2,6 +2,7 @@
 Tests for provider factory and base provider functionality.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -313,6 +314,91 @@ class TestVertexProviderAuthMethods:
         expected = ['adc', 'service_account', 'workload_identity', 'impersonation']
         for method in expected:
             assert method in VertexAIProvider.AUTH_METHODS
+
+
+class TestVertexProviderSdkSelection:
+    """Tests for Vertex AI provider SDK selection via gateway config hint."""
+
+    def test_resolve_google_ai_sdk_from_gateway(self):
+        """Test _resolve_google_ai_sdk reads from agentsec gateway config."""
+        from providers.vertex import _resolve_google_ai_sdk
+        with patch("providers.vertex.get_default_gateway_for_provider",
+                   create=True) as mock_gw:
+            mock_gw.return_value = {"sdk": "vertexai", "provider": "vertexai"}
+            # Patch the import inside _resolve_google_ai_sdk
+            with patch.dict("sys.modules", {
+                "aidefense.runtime.agentsec._state": MagicMock(
+                    get_default_gateway_for_provider=mock_gw
+                )
+            }):
+                result = _resolve_google_ai_sdk()
+                assert result == "vertexai"
+
+    def test_resolve_google_ai_sdk_falls_back_to_env(self):
+        """Test _resolve_google_ai_sdk falls back to GOOGLE_AI_SDK env var."""
+        from providers.vertex import _resolve_google_ai_sdk
+        with patch.dict("sys.modules", {
+            "aidefense.runtime.agentsec._state": MagicMock(
+                get_default_gateway_for_provider=MagicMock(return_value=None)
+            )
+        }):
+            with patch.dict(os.environ, {"GOOGLE_AI_SDK": "vertexai"}):
+                result = _resolve_google_ai_sdk()
+                assert result == "vertexai"
+
+    def test_resolve_google_ai_sdk_default_is_google_genai(self):
+        """Test _resolve_google_ai_sdk defaults to google_genai."""
+        from providers.vertex import _resolve_google_ai_sdk
+        with patch.dict("sys.modules", {
+            "aidefense.runtime.agentsec._state": MagicMock(
+                get_default_gateway_for_provider=MagicMock(return_value=None)
+            )
+        }):
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("GOOGLE_AI_SDK", None)
+                result = _resolve_google_ai_sdk()
+                assert result == "google_genai"
+
+    def test_get_langchain_llm_vertexai_path(self):
+        """Test get_langchain_llm returns ChatVertexAI when sdk=vertexai."""
+        from providers.vertex import VertexAIProvider
+        config = {
+            "model_id": "gemini-2.0-flash",
+            "project_id": "test-project",
+            "location": "us-central1",
+            "auth": {"method": "adc"},
+        }
+        provider = VertexAIProvider(config, {"temperature": 0.5, "max_tokens": 1024})
+        provider._authenticated = True
+        provider._credentials = MagicMock()
+
+        with patch("providers.vertex._resolve_google_ai_sdk", return_value="vertexai"):
+            with patch("langchain_google_vertexai.ChatVertexAI") as mock_cls:
+                mock_cls.return_value = MagicMock()
+                result = provider.get_langchain_llm()
+                mock_cls.assert_called_once()
+                assert mock_cls.call_args.kwargs["model_name"] == "gemini-2.0-flash"
+
+    def test_get_langchain_llm_google_genai_path(self):
+        """Test get_langchain_llm returns ChatGoogleGenerativeAI when sdk=google_genai."""
+        from providers.vertex import VertexAIProvider
+        config = {
+            "model_id": "gemini-2.0-flash",
+            "project_id": "test-project",
+            "location": "us-central1",
+            "auth": {"method": "adc"},
+        }
+        provider = VertexAIProvider(config, {"temperature": 0.5, "max_tokens": 1024})
+        provider._authenticated = True
+        provider._credentials = MagicMock()
+
+        with patch("providers.vertex._resolve_google_ai_sdk", return_value="google_genai"):
+            with patch("langchain_google_genai.ChatGoogleGenerativeAI") as mock_cls:
+                mock_cls.return_value = MagicMock()
+                result = provider.get_langchain_llm()
+                mock_cls.assert_called_once()
+                assert mock_cls.call_args.kwargs["model"] == "gemini-2.0-flash"
+                assert mock_cls.call_args.kwargs["vertexai"] is True
 
 
 class TestOpenAIProviderAuthMethods:

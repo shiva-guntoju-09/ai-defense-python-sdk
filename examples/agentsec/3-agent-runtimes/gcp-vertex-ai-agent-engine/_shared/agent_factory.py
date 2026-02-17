@@ -8,7 +8,7 @@ agentsec.protect() is called BEFORE importing the AI library to ensure
 all calls are properly intercepted and inspected by Cisco AI Defense.
 
 ARCHITECTURE:
-    User Prompt → LangChain Agent → ChatGoogleGenerativeAI (LLM)
+    User Prompt → LangChain Agent → Gemini LLM
                          ↓
                    Tool Calling
                          ↓
@@ -23,11 +23,21 @@ ARCHITECTURE:
                         ↓
                    Final Response
 
-SUPPORTED LIBRARIES:
-- `google-genai` (google-genai) - Modern unified SDK, via langchain-google-genai
-  Uses ChatGoogleGenerativeAI with vertexai=True, which internally uses the
-  google.genai.Client (patched by agentsec). This replaces the deprecated
-  ChatVertexAI that used GAPIC PredictionServiceClient (not interceptable).
+SUPPORTED LIBRARIES (controlled by the ``sdk`` field on the vertexai gateway
+in agentsec.yaml, which resolves ``${GOOGLE_AI_SDK}`` from the environment):
+
+- google_genai (default for local development):
+  Uses ChatGoogleGenerativeAI (langchain-google-genai) with vertexai=True.
+  Internally uses google.genai.Client, patched by agentsec's google_genai patcher.
+  This is the forward path LangChain is steering toward.
+
+- vertexai (recommended for Agent Engine deployment):
+  Uses ChatVertexAI (langchain-google-vertexai) with vertexai.init().
+  Internally uses vertexai.GenerativeModel, patched by agentsec's vertexai patcher.
+  Avoids the ACCESS_TOKEN_SCOPE_INSUFFICIENT error in Agent Engine where the
+  managed SA lacks the generative-language scope that google.genai requires.
+
+Both paths are fully supported by agentsec for gateway and API mode inspection.
 """
 
 import os
@@ -44,9 +54,6 @@ from dotenv import load_dotenv
 _shared_env = Path(__file__).parent.parent.parent.parent / ".env"
 if _shared_env.exists():
     load_dotenv(_shared_env)
-
-# Determine which SDK to use
-GOOGLE_AI_SDK = os.getenv("GOOGLE_AI_SDK", "vertexai")  # "vertexai" or "google_genai"
 
 # =============================================================================
 # Configure agentsec protection (LAZY - initialized on first use)
@@ -102,14 +109,13 @@ def _initialize_agentsec():
         **_protect_kwargs,
     )
     
-    print(f"[agentsec] SDK: {GOOGLE_AI_SDK} | Patched: {agentsec.get_patched_clients()}")
+    print(f"[agentsec] Patched: {agentsec.get_patched_clients()}")
     
     _agentsec_initialized = True
 
 # =============================================================================
 # Import LangChain libraries (AFTER agentsec is ready to be initialized)
 # =============================================================================
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 
 # Import our tools
@@ -121,21 +127,7 @@ from .mcp_tools import get_mcp_tools
 # =============================================================================
 
 # System prompt for the SRE agent
-SYSTEM_PROMPT = """You are an SRE (Site Reliability Engineering) helper agent.
-
-You have access to the following capabilities:
-- Check service health status (check_service_health)
-- Get recent log entries (get_recent_logs)
-- Calculate capacity planning metrics (calculate_capacity)
-- Fetch webpage content from URLs (fetch_url) - Use this when asked to fetch or read a URL
-
-When asked to check a service, USE the check_service_health tool.
-When asked to view logs, USE the get_recent_logs tool.
-When asked about capacity or scaling, USE the calculate_capacity tool.
-When asked to fetch a URL or read webpage content, ALWAYS use the fetch_url tool.
-
-Be helpful, concise, and technically accurate.
-After using a tool, summarize the results clearly for the user."""
+SYSTEM_PROMPT = """You are an SRE helper agent. Use check_service_health for service checks, get_recent_logs for logs, calculate_capacity for scaling, and fetch_url for URLs. Be concise and accurate. Summarize tool results for the user."""
 
 # Global agent state (singleton pattern for cold start optimization)
 _llm_with_tools = None
@@ -160,25 +152,47 @@ def _get_agent():
         location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
         model_name = os.getenv("VERTEX_AI_MODEL", "gemini-2.0-flash-001")
         
+        # Resolve SDK from the agentsec gateway config (set via agentsec.yaml's
+        # sdk: ${GOOGLE_AI_SDK}), falling back to the GOOGLE_AI_SDK env var.
+        from aidefense.runtime.agentsec._state import get_default_gateway_for_provider
+        _gw = get_default_gateway_for_provider("vertexai")
+        google_ai_sdk = (_gw.get("sdk") if _gw else None) or os.getenv("GOOGLE_AI_SDK", "google_genai")
+        
         print(f"[agent] Creating LangChain agent with model: {model_name}", flush=True)
         print(f"[agent] Project: {project}, Location: {location}", flush=True)
+        print(f"[agent] SDK path: {google_ai_sdk}", flush=True)
         
-        # Create the LLM using ChatGoogleGenerativeAI with vertexai=True.
-        # This uses the google.genai.Client internally, which IS intercepted
-        # by agentsec patchers (unlike the deprecated ChatVertexAI that used
-        # GAPIC PredictionServiceClient which was not interceptable).
-        from google.auth import default as _auth_default
-        _credentials, _ = _auth_default()
-        
-        llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            vertexai=True,
-            project=project,
-            location=location,
-            credentials=_credentials,
-            temperature=0.7,
-            max_output_tokens=1024,
-        )
+        if google_ai_sdk == "vertexai":
+            # Agent Engine safe path: uses vertexai.GenerativeModel internally,
+            # which only requires the aiplatform scope (always available in
+            # Agent Engine). Patched by agentsec's vertexai patcher.
+            import vertexai
+            from langchain_google_vertexai import ChatVertexAI
+            
+            vertexai.init(project=project, location=location)
+            llm = ChatVertexAI(
+                model_name=model_name,
+                temperature=0.7,
+                max_output_tokens=1024,
+            )
+        else:
+            # Modern forward path (default): uses google.genai.Client internally.
+            # Patched by agentsec's google_genai patcher.
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            import google.auth
+            
+            _credentials, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            llm = ChatGoogleGenerativeAI(
+                model=model_name,
+                vertexai=True,
+                project=project,
+                location=location,
+                credentials=_credentials,
+                temperature=0.7,
+                max_output_tokens=1024,
+            )
         
         # Combine local tools + MCP tools (if configured)
         local_tools = TOOLS  # [check_service_health, get_recent_logs, calculate_capacity]

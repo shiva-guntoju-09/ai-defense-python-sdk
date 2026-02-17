@@ -131,6 +131,7 @@ def _apply_patches(api_mode_llm: Optional[str], api_mode_mcp: Optional[str]) -> 
         patch_cohere,
         patch_mistral,
         patch_litellm,
+        patch_azure_ai_inference,
     )
 
     llm_integration = _state.get_llm_integration_mode()
@@ -149,6 +150,7 @@ def _apply_patches(api_mode_llm: Optional[str], api_mode_mcp: Optional[str]) -> 
         patch_cohere()
         patch_mistral()
         patch_litellm()
+        patch_azure_ai_inference()
 
     # Determine if MCP patching is needed
     mcp_active = (
@@ -365,7 +367,17 @@ def _protect_impl(
         custom_logger=custom_logger,
     )
 
-    # Step 5: Store state BEFORE patching
+    # Step 5: Resolve pool settings (kwargs > YAML > None)
+    yaml_pool_max_conn = merged.get("pool_max_connections")
+    yaml_pool_max_keep = merged.get("pool_max_keepalive")
+    final_pool_max_connections = pool_max_connections
+    if final_pool_max_connections is None and yaml_pool_max_conn is not None:
+        final_pool_max_connections = int(yaml_pool_max_conn)
+    final_pool_max_keepalive = pool_max_keepalive
+    if final_pool_max_keepalive is None and yaml_pool_max_keep is not None:
+        final_pool_max_keepalive = int(yaml_pool_max_keep)
+
+    # Step 6: Store state BEFORE patching
     _state.set_state(
         initialized=True,
         llm_rules=api_llm_cfg.get("rules"),
@@ -374,21 +386,21 @@ def _protect_impl(
         mcp_integration_mode=final_mcp_integration,
         gateway_mode=final_gateway_mode,
         api_mode=final_api_mode,
-        pool_max_connections=pool_max_connections,
-        pool_max_keepalive=pool_max_keepalive,
+        pool_max_connections=final_pool_max_connections,
+        pool_max_keepalive=final_pool_max_keepalive,
         log_file=final_log_file,
         log_format=final_log_format,
         custom_logger=custom_logger,
     )
 
-    # Step 6: Apply client patches
+    # Step 7: Apply client patches
     patched: List[str] = []
     if patch_clients:
         logger.debug("Applying client patches...")
         _apply_patches(api_mode_llm_str, api_mode_mcp_str)
         patched = get_patched_clients()
 
-    # Step 7: Log initialization summary
+    # Step 8: Log initialization summary
     gw_llm_mode = final_gateway_mode.get("llm_mode", "on")
     gw_mcp_mode = final_gateway_mode.get("mcp_mode", "on")
 

@@ -22,7 +22,10 @@ and vertexai.py (vertexai) patchers for message normalization and response extra
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Iterator
+import time
+from typing import Any, Dict, List, Optional
+
+import httpx
 
 logger = logging.getLogger("aidefense.runtime.agentsec.patchers.google_common")
 
@@ -238,6 +241,97 @@ def extract_streaming_chunk_text(chunk: Any) -> str:
         logger.debug(f"Error extracting streaming chunk: {e}")
     
     return ""
+
+
+def _should_retry_gateway_error(error: Exception, retry_status_codes: List[int]) -> bool:
+    """Return True if the error is retryable (HTTP status in retry list, timeout, connect error)."""
+    if isinstance(error, httpx.TimeoutException):
+        return True
+    if isinstance(error, httpx.ConnectError):
+        return True
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code in retry_status_codes
+    return False
+
+
+def vertexai_gateway_post(
+    url: str,
+    content: bytes,
+    headers: Dict[str, str],
+    gw_settings: Any,
+) -> httpx.Response:
+    """
+    POST to Vertex AI gateway with retry on retryable errors.
+
+    Uses gw_settings.retry_total, retry_backoff, retry_status_codes.
+    Applies exponential backoff between retries.
+    """
+    retry_total = getattr(gw_settings, "retry_total", 3)
+    retry_backoff = getattr(gw_settings, "retry_backoff", 0.5)
+    retry_status_codes = getattr(gw_settings, "retry_status_codes", [429, 500, 502, 503, 504])
+    timeout = float(getattr(gw_settings, "timeout", 60))
+
+    last_error: Optional[Exception] = None
+    for attempt in range(max(1, retry_total)):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(url, content=content, headers=headers)
+                response.raise_for_status()
+                return response
+        except Exception as e:
+            last_error = e
+            is_last = attempt >= max(1, retry_total) - 1
+            if is_last or not _should_retry_gateway_error(e, retry_status_codes):
+                raise
+            delay = retry_backoff * (2 ** attempt) if retry_backoff > 0 else 0
+            if delay > 0:
+                logger.debug(f"[GATEWAY] Retry attempt {attempt + 1}/{retry_total} failed: {e}. Retrying in {delay:.2f}s...")
+                time.sleep(min(delay, 30.0))
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("vertexai_gateway_post: unreachable")  # type: ignore
+
+
+async def vertexai_gateway_post_async(
+    url: str,
+    content: bytes,
+    headers: Dict[str, str],
+    gw_settings: Any,
+) -> httpx.Response:
+    """Async variant of vertexai_gateway_post."""
+    import asyncio
+
+    retry_total = getattr(gw_settings, "retry_total", 3)
+    retry_backoff = getattr(gw_settings, "retry_backoff", 0.5)
+    retry_status_codes = getattr(gw_settings, "retry_status_codes", [429, 500, 502, 503, 504])
+    timeout = float(getattr(gw_settings, "timeout", 60))
+
+    last_error: Optional[Exception] = None
+    for attempt in range(max(1, retry_total)):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, content=content, headers=headers)
+                response.raise_for_status()
+                return response
+        except Exception as e:
+            last_error = e
+            is_last = attempt >= max(1, retry_total) - 1
+            if is_last or not _should_retry_gateway_error(e, retry_status_codes):
+                raise
+            delay = retry_backoff * (2 ** attempt) if retry_backoff > 0 else 0
+            if delay > 0:
+                logger.debug(f"[GATEWAY] Async retry attempt {attempt + 1}/{retry_total} failed: {e}. Retrying in {delay:.2f}s...")
+                await asyncio.sleep(min(delay, 30.0))
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("vertexai_gateway_post_async: unreachable")  # type: ignore
+
+
+def _has_multi_turn_contents(contents_list: List[Dict]) -> bool:
+    """Return True if contents has more than one message (multi-turn)."""
+    return len(contents_list) > 1
 
 
 def build_vertexai_gateway_url(

@@ -231,23 +231,3 @@ def get_context_logger(**context: Any) -> LogAdapter:
     return LogAdapter(get_logger(), context)
 
 
-def cleanup_logging() -> None:
-    """
-    Clean up logging resources.
-    
-    Closes all file handlers and removes them from the logger.
-    This should be called during shutdown to ensure proper cleanup.
-    """
-    global _file_handlers
-    
-    logger = logging.getLogger("aidefense.runtime.agentsec")
-    
-    for handler in _file_handlers:
-        try:
-            handler.close()
-            logger.removeHandler(handler)
-        except Exception as e:
-            logger.debug("Error closing file handler during cleanup: %s", e)
-    
-    _file_handlers = []
-    _clear_custom_logger()

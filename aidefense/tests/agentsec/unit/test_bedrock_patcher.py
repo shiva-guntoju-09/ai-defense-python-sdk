@@ -469,9 +469,9 @@ class TestBedrockResponseParsing:
         from aidefense.runtime.agentsec.patchers.bedrock import _is_bedrock_operation
         
         # Converse operations
-        assert _is_bedrock_operation("Converse", {"modelId": "claude"}) is True
-        assert _is_bedrock_operation("ConverseStream", {"modelId": "claude"}) is True
+        assert _is_bedrock_operation("Converse") is True
+        assert _is_bedrock_operation("ConverseStream") is True
         
         # Non-Bedrock operations
-        assert _is_bedrock_operation("ListModels", {}) is False
+        assert _is_bedrock_operation("ListModels") is False
 

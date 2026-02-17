@@ -8,12 +8,7 @@ Supports:
 - OpenAI (openai)
 """
 
-from typing import TYPE_CHECKING
-
 from .base import BaseLLMProvider
-
-if TYPE_CHECKING:
-    pass
 
 # Lazy imports to avoid requiring all provider dependencies
 _provider_classes = {}

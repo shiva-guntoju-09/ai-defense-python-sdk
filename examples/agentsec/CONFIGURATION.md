@@ -68,6 +68,8 @@ If a referenced variable is not set, a `ConfigurationError` is raised.
 | --- | --- | --- | --- | --- |
 | `llm_integration_mode` | string | `"api"`, `"gateway"` | `"api"` | How LLM calls are inspected. `"api"` sends a side-channel inspection request; `"gateway"` proxies LLM calls through a gateway. |
 | `mcp_integration_mode` | string | `"api"`, `"gateway"` | `"api"` | How MCP tool calls are inspected. Same semantics as `llm_integration_mode`. |
+| `pool_max_connections` | int | >= 1 | `100` | Maximum number of simultaneous HTTP connections in the pool used for Cisco AI Defense API calls. |
+| `pool_max_keepalive` | int | >= 0 | `20` | Maximum number of idle keep-alive connections retained in the pool. |
 
 ---
 
@@ -382,7 +384,8 @@ Used for authenticating to Vertex AI and deploying to Agent Engine / Cloud Run /
 | --- | --- | --- | --- |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID | `your-gcp-project-id` | Deploy scripts / examples |
 | `GOOGLE_CLOUD_LOCATION` | GCP region | `us-central1` | Deploy scripts / examples |
-| `GOOGLE_AI_SDK` | Google AI SDK identifier (informational -- the runtime always uses `ChatGoogleGenerativeAI` / `google-genai`) | `google_genai` | Logging / deploy scripts |
+| `GOOGLE_AI_SDK` | Google AI SDK to use: `google_genai` (ChatGoogleGenerativeAI, default) or `vertexai` (ChatVertexAI). Resolved by `agentsec.yaml` via `${GOOGLE_AI_SDK}` | `google_genai` | agentsec.yaml gateway `sdk` field |
+| `GOOGLE_AI_SDK_DEPLOYMENT` | SDK passed to deployed containers by deploy scripts. Overrides `GOOGLE_AI_SDK` for deployments | `vertexai` | Deploy scripts |
 | `GKE_AUTHORIZED_NETWORKS` | GKE authorized networks (CIDR) | `YOUR_PUBLIC_IP/32` | GKE deployment only |
 
 ### GCP Vertex AI Per-Gateway
@@ -473,8 +476,8 @@ agentsec.protect(
 | `mcp_integration_mode` | `str` | `None` | `"api"` or `"gateway"`. Overrides the YAML value. When `None`, the YAML value is used (or default `"api"`). |
 | `gateway_mode` | `dict` | `None` | Dict matching the `gateway_mode` YAML section. Deep-merged over the YAML value. |
 | `api_mode` | `dict` | `None` | Dict matching the `api_mode` YAML section. Deep-merged over the YAML value. |
-| `pool_max_connections` | `int` | `100` | Maximum number of HTTP connections in the global connection pool. Must be >= 1. |
-| `pool_max_keepalive` | `int` | `20` | Maximum number of keepalive connections in the pool. Must be >= 0. |
+| `pool_max_connections` | `int` | `None` | Maximum number of HTTP connections in the pool. Must be >= 1. When `None`, the YAML value is used (or built-in default `100`). |
+| `pool_max_keepalive` | `int` | `None` | Maximum number of idle keep-alive connections in the pool. Must be >= 0. When `None`, the YAML value is used (or built-in default `20`). |
 | `custom_logger` | `logging.Logger` | `None` | Provide your own Python `logging.Logger` instance instead of the built-in agentsec logger. |
 | `log_file` | `str` | `None` | Path to a file where log output is written. Overrides `logging.file` from YAML. |
 | `log_format` | `str` | `None` | `"text"` or `"json"`. Overrides `logging.format` from YAML. |

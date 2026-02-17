@@ -6,11 +6,39 @@ Supported auth methods:
 - service_account: Service account key file or JSON (uses vertexai)
 - workload_identity: GKE Workload Identity (uses vertexai)
 - impersonation: Service account impersonation (uses vertexai)
+
+SDK selection (controlled by the ``sdk`` field on the vertexai gateway in
+agentsec.yaml, which resolves ``${GOOGLE_AI_SDK}`` from the environment):
+
+- google_genai (default): ChatGoogleGenerativeAI via langchain-google-genai.
+  Internally uses google.genai.Client, patched by agentsec's google_genai patcher.
+- vertexai: ChatVertexAI via langchain-google-vertexai.
+  Internally uses vertexai.GenerativeModel, patched by agentsec's vertexai patcher.
+  Required for Agent Engine deployments (token scope limitation).
 """
 
+import logging
+import os
 from typing import Any, Optional
 
 from .base import BaseLLMProvider
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_google_ai_sdk() -> str:
+    """Read the ``sdk`` hint from the vertexai gateway config, with env var fallback.
+
+    Priority: agentsec.yaml gateway config ``sdk`` field > ``GOOGLE_AI_SDK`` env var > ``"google_genai"``.
+    """
+    try:
+        from aidefense.runtime.agentsec._state import get_default_gateway_for_provider
+        gw = get_default_gateway_for_provider("vertexai")
+        if gw and gw.get("sdk"):
+            return gw["sdk"]
+    except Exception as e:
+        logger.debug("Could not resolve vertexai gateway config: %s", e)
+    return os.getenv("GOOGLE_AI_SDK", "google_genai")
 
 
 class VertexAIProvider(BaseLLMProvider):
@@ -149,26 +177,38 @@ class VertexAIProvider(BaseLLMProvider):
     
     def get_langchain_llm(self) -> Any:
         """Return LangChain-compatible Google Generative AI model.
-        
-        Uses ChatGoogleGenerativeAI with vertexai=True, which internally
-        uses the google.genai.Client (patched by agentsec) instead of the
-        deprecated ChatVertexAI that uses GAPIC PredictionServiceClient
-        (not interceptable by agentsec patchers).
+
+        The SDK is selected by the ``sdk`` field on the vertexai gateway in
+        agentsec.yaml (resolved from ``${GOOGLE_AI_SDK}``):
+
+        - ``google_genai`` (default): ChatGoogleGenerativeAI (langchain-google-genai).
+          Uses google.genai.Client internally, patched by agentsec's google_genai patcher.
+        - ``vertexai``: ChatVertexAI (langchain-google-vertexai).
+          Uses vertexai.GenerativeModel internally, patched by agentsec's vertexai patcher.
         """
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        
         if not self._authenticated:
             self.authenticate()
-        
-        return ChatGoogleGenerativeAI(
-            model=self.model_id,
-            vertexai=True,
-            project=self.project_id,
-            location=self.location,
-            credentials=self._credentials,
-            temperature=self.temperature,
-            max_output_tokens=self.max_tokens,
-        )
+
+        sdk = _resolve_google_ai_sdk()
+
+        if sdk == "vertexai":
+            from langchain_google_vertexai import ChatVertexAI
+            return ChatVertexAI(
+                model_name=self.model_id,
+                temperature=self.temperature,
+                max_output_tokens=self.max_tokens,
+            )
+        else:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            return ChatGoogleGenerativeAI(
+                model=self.model_id,
+                vertexai=True,
+                project=self.project_id,
+                location=self.location,
+                credentials=self._credentials,
+                temperature=self.temperature,
+                max_output_tokens=self.max_tokens,
+            )
     
     def get_crewai_llm(self) -> Any:
         """Return CrewAI LLM instance using Vertex AI integration."""

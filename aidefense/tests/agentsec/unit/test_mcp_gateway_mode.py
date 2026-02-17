@@ -643,3 +643,30 @@ class TestMCPPromptResourceWrappers:
             assert mock_gateway_inspector.ainspect_response.called
             assert wrapped.called
             assert result == mock_result
+
+
+class TestMCP405ReconnectPatch:
+    """Test MCP handle_get_stream 405 reconnection patch."""
+
+    def test_patch_mcp_handle_get_stream_405_replaces_method(self):
+        """Test that _patch_mcp_handle_get_stream_405 replaces handle_get_stream when MCP is available."""
+        pytest.importorskip("mcp")
+        from mcp.client import streamable_http as _sh
+
+        orig_handle_get_stream = _sh.StreamableHTTPTransport.handle_get_stream
+
+        # Apply patch
+        mcp_patcher._patch_mcp_handle_get_stream_405()
+
+        # Verify method was replaced
+        assert _sh.StreamableHTTPTransport.handle_get_stream is not orig_handle_get_stream
+        assert callable(_sh.StreamableHTTPTransport.handle_get_stream)
+
+    def test_patch_mcp_handle_get_stream_405_idempotent(self):
+        """Test that _patch_mcp_handle_get_stream_405 can be called multiple times without error."""
+        pytest.importorskip("mcp")
+        # First call replaces the method; second call replaces with same patched version
+        mcp_patcher._patch_mcp_handle_get_stream_405()
+        mcp_patcher._patch_mcp_handle_get_stream_405()
+        from mcp.client import streamable_http as _sh
+        assert callable(_sh.StreamableHTTPTransport.handle_get_stream)

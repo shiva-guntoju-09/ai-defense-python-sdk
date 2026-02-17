@@ -147,7 +147,7 @@ export AGENTSEC_LLM_INTEGRATION_MODE=api
 ## Architecture
 
 ```
-User → Vertex AI Agent Engine → LangChain Agent → ChatGoogleGenerativeAI (LLM)
+User → Vertex AI Agent Engine → LangChain Agent → ChatGoogleGenerativeAI (LLM)  [or ChatVertexAI when sdk=vertexai]
                                       ↓
                                  Tool Calling
                                       ↓
@@ -166,6 +166,28 @@ User → Vertex AI Agent Engine → LangChain Agent → ChatGoogleGenerativeAI (
 All LLM and MCP calls protected by Cisco AI Defense (agentsec).
 
 ## Known Issues
+
+### ACCESS_TOKEN_SCOPE_INSUFFICIENT (generativelanguage.googleapis.com)
+When invoking a deployed Agent Engine you may see:
+```
+403 Request had insufficient authentication scopes.
+service: "generativelanguage.googleapis.com"
+```
+**Root cause:** `ChatGoogleGenerativeAI(vertexai=True)` uses the `google-genai` SDK which
+routes through `aiplatform.googleapis.com`, but the backend delegates to
+`generativelanguage.googleapis.com` for Gemini models. Agent Engine's managed
+service account token lacks the `generative-language` scope that this backend requires.
+
+**Fix:** Set `GOOGLE_AI_SDK=vertexai` (done automatically by `deploy.sh`).
+This switches from `ChatGoogleGenerativeAI` (google-genai SDK) to `ChatVertexAI`
+(vertexai SDK), which only needs the `aiplatform` scope that Agent Engine provides.
+
+Both SDK paths are fully supported by agentsec for gateway and API mode inspection:
+- `google_genai` path: patched by agentsec's `google_genai` patcher
+- `vertexai` path: patched by agentsec's `vertexai` patcher
+
+For local development, `GOOGLE_AI_SDK=google_genai` (the default) is recommended
+as it is the forward path LangChain is steering toward.
 
 ### Long Cold Start
 First invocation takes ~25 minutes as Agent Engine spins up instances.

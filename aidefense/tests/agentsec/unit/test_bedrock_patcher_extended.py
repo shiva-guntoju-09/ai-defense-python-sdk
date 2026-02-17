@@ -3,7 +3,7 @@
 Covers _should_inspect, _handle_patcher_error, _StreamingBodyWrapper,
 _parse_agentcore_payload, _parse_agentcore_response, _parse_bedrock_messages,
 _parse_bedrock_response, _parse_converse_messages, _is_agentcore_client,
-_is_agentcore_operation, _BedrockFakeStreamWrapper, _BedrockEventStreamWrapper,
+_is_agentcore_operation, _BedrockFakeStreamWrapper,
 _get_inspector, and patch_bedrock.
 """
 
@@ -24,7 +24,6 @@ from aidefense.runtime.agentsec.patchers.bedrock import (
     _is_agentcore_client,
     _is_agentcore_operation,
     _BedrockFakeStreamWrapper,
-    _BedrockEventStreamWrapper,
     patch_bedrock,
 )
 from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
@@ -412,25 +411,6 @@ class TestBedrockFakeStreamWrapper:
 
     def test_close_no_op(self):
         wrapper = _BedrockFakeStreamWrapper({"output": {"message": {"content": []}}})
-        wrapper.close()  # Should not raise
-
-
-# ===========================================================================
-# _BedrockEventStreamWrapper
-# ===========================================================================
-
-class TestBedrockEventStreamWrapper:
-    def test_wraps_generator_as_event_stream(self):
-        def gen():
-            yield {"event": 1}
-            yield {"event": 2}
-
-        wrapper = _BedrockEventStreamWrapper(gen())
-        events = list(wrapper)
-        assert events == [{"event": 1}, {"event": 2}]
-
-    def test_close_no_op(self):
-        wrapper = _BedrockEventStreamWrapper(iter([]))
         wrapper.close()  # Should not raise
 
 

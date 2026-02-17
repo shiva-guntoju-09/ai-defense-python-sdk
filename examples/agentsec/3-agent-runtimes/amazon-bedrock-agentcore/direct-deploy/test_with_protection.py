@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 
 # Enable DEBUG logging for agentsec to capture inspection logs
@@ -48,9 +49,17 @@ for _yp in _yaml_paths:
         _yaml_config = str(_yp)
         break
 
+# Allow integration test scripts to override YAML integration mode via env vars
+_protect_kwargs = {}
+if os.getenv("AGENTSEC_LLM_INTEGRATION_MODE"):
+    _protect_kwargs["llm_integration_mode"] = os.getenv("AGENTSEC_LLM_INTEGRATION_MODE")
+if os.getenv("AGENTSEC_MCP_INTEGRATION_MODE"):
+    _protect_kwargs["mcp_integration_mode"] = os.getenv("AGENTSEC_MCP_INTEGRATION_MODE")
+
 agentsec.protect(
     config=_yaml_config,
     auto_dotenv=False,  # We already loaded .env manually
+    **_protect_kwargs,
 )
 
 print(f"[agentsec] Patched: {agentsec.get_patched_clients()}")
@@ -83,6 +92,8 @@ def invoke_agent_with_boto3(prompt: str, agent_name: str = "agentcore_sre_direct
             raise ValueError(f"Agent '{agent_name}' not found in config. Available: {list(config.get('agents', {}).keys())}")
         agent_arn = agent_config.get("bedrock_agentcore", {}).get("agent_arn")
         session_id = agent_config.get("bedrock_agentcore", {}).get("agent_session_id")
+        if not session_id:
+            session_id = str(uuid.uuid4())
     
     print(f"\n[client] Agent ARN: {agent_arn}")
     print(f"[client] Session: {session_id}")

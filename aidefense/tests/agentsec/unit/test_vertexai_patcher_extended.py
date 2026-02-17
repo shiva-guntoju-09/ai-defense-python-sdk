@@ -6,7 +6,12 @@ _VertexAIResponseWrapper, _CandidateWrapper, _ContentWrapper, _PartWrapper,
 _VertexAIGatewayStreamWrapper, _handle_vertexai_gateway_call,
 GoogleStreamingInspectionWrapper, _inspect_vertexai_sync,
 _wrap_generate_content, _wrap_private_generate_content,
-patch_vertexai, and _get_inspector. Does NOT test async functions.
+patch_vertexai, _extract_from_prediction_request,
+_extract_model_short_name, _clean_proto_dict, _prediction_request_to_body,
+_inspect_prediction_sync, _inspect_prediction_stream_sync,
+_wrap_prediction_generate_content, _wrap_prediction_stream_generate_content,
+_handle_prediction_gateway_call, and _get_inspector.
+Does NOT test async functions.
 """
 
 import httpx
@@ -33,6 +38,16 @@ from aidefense.runtime.agentsec.patchers.vertexai import (
     _wrap_generate_content,
     _wrap_private_generate_content,
     patch_vertexai,
+    # PredictionServiceClient helpers
+    _extract_from_prediction_request,
+    _extract_model_short_name,
+    _clean_proto_dict,
+    _prediction_request_to_body,
+    _handle_prediction_gateway_call,
+    _inspect_prediction_sync,
+    _inspect_prediction_stream_sync,
+    _wrap_prediction_generate_content,
+    _wrap_prediction_stream_generate_content,
 )
 from aidefense.runtime.agentsec.exceptions import SecurityPolicyError
 from aidefense.runtime.agentsec.decision import Decision
@@ -638,3 +653,326 @@ class TestWrapPrivateGenerateContent:
         """When no reentrancy guard, should inspect."""
         result = _wrap_private_generate_content(MagicMock(), SimpleNamespace(), (), {})
         assert result == "inspected"
+
+
+# ===========================================================================
+# PredictionServiceClient helpers
+# ===========================================================================
+
+class TestExtractModelShortName:
+    def test_fully_qualified(self):
+        fq = "projects/p/locations/l/publishers/google/models/gemini-2.5-flash"
+        assert _extract_model_short_name(fq) == "gemini-2.5-flash"
+
+    def test_already_short(self):
+        assert _extract_model_short_name("gemini-2.5-flash") == "gemini-2.5-flash"
+
+    def test_endpoint_format(self):
+        ep = "projects/p/locations/l/endpoints/12345"
+        assert _extract_model_short_name(ep) == ep
+
+
+class TestCleanProtoDict:
+    def test_removes_thought_defaults(self):
+        d = {
+            "role": "user",
+            "parts": [{"text": "hi", "thought": False, "thought_signature": ""}],
+        }
+        result = _clean_proto_dict(d)
+        assert result == {"role": "user", "parts": [{"text": "hi"}]}
+
+    def test_preserves_non_default_values(self):
+        d = {"text": "hello", "thought": True}
+        result = _clean_proto_dict(d)
+        assert result == {"text": "hello", "thought": True}
+
+    def test_passes_through_primitives(self):
+        assert _clean_proto_dict(42) == 42
+        assert _clean_proto_dict("hello") == "hello"
+
+
+class TestExtractFromPredictionRequest:
+    def test_from_dict_request(self):
+        req_dict = {
+            "model": "projects/p/locations/l/publishers/google/models/gemini-2.5-flash",
+            "contents": [{"role": "user", "parts": [{"text": "Hi"}]}],
+        }
+        request, short, contents, fq = _extract_from_prediction_request(
+            (), {"request": req_dict}
+        )
+        assert request is req_dict
+        assert short == "gemini-2.5-flash"
+        assert contents == [{"role": "user", "parts": [{"text": "Hi"}]}]
+
+    def test_from_object_request(self):
+        req = SimpleNamespace(
+            model="projects/p/locations/l/publishers/google/models/gemini-pro",
+            contents=["content1"],
+        )
+        request, short, contents, fq = _extract_from_prediction_request(
+            (req,), {}
+        )
+        assert short == "gemini-pro"
+        assert contents == ["content1"]
+
+    def test_from_kwargs(self):
+        request, short, contents, fq = _extract_from_prediction_request(
+            (),
+            {
+                "model": "projects/p/locations/l/publishers/google/models/gemini-flash",
+                "contents": [{"role": "user", "parts": [{"text": "Hello"}]}],
+            },
+        )
+        assert request is None
+        assert short == "gemini-flash"
+
+    def test_unknown_model(self):
+        _, short, _, fq = _extract_from_prediction_request((), {})
+        assert short == "unknown"
+        assert fq == "unknown"
+
+
+class TestPredictionRequestToBody:
+    def test_dict_request(self):
+        req = {
+            "model": "projects/p/locations/l/publishers/google/models/gem",
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {"temperature": 0.7},
+        }
+        body = _prediction_request_to_body(req, req["model"])
+        assert "model" not in body
+        assert body["contents"] == [{"role": "user", "parts": [{"text": "hi"}]}]
+        assert body["generationConfig"] == {"temperature": 0.7}
+
+    def test_dict_strips_empty(self):
+        req = {"model": "m", "contents": [], "tools": [], "labels": {}}
+        body = _prediction_request_to_body(req, "m")
+        assert "model" not in body
+        assert "tools" not in body or body.get("tools") == []
+
+    def test_proto_like_object_with_to_dict(self):
+        class FakeProto:
+            model = "projects/p/locations/l/publishers/google/models/g"
+            contents = []
+            @classmethod
+            def to_dict(cls, obj):
+                return {
+                    "model": obj.model,
+                    "contents": [{"role": "user", "parts": [{"text": "hello", "thought": False}]}],
+                }
+        body = _prediction_request_to_body(FakeProto(), FakeProto.model)
+        assert "model" not in body
+        assert body["contents"] == [{"role": "user", "parts": [{"text": "hello"}]}]
+
+
+# ===========================================================================
+# _handle_prediction_gateway_call()
+# ===========================================================================
+
+class TestHandlePredictionGatewayCall:
+    def _make_gw_settings(self, **overrides):
+        defaults = {
+            "url": "https://gw.example.com/conn/123",
+            "api_key": "test-key",
+            "auth_mode": "api_key",
+            "fail_open": True,
+            "timeout": 30,
+            "gcp_project": "my-proj",
+            "gcp_location": "us-central1",
+            "gcp_service_account_key_file": None,
+            "gcp_target_service_account": None,
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    @patch("aidefense.runtime.agentsec.patchers._google_common.build_vertexai_gateway_url",
+           return_value="https://gw.example.com/v1/model:generateContent")
+    @patch("httpx.Client")
+    def test_gateway_success(self, mock_client_cls, _url):
+        gw = self._make_gw_settings()
+        response_json = {
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "Hi!"}]}}]
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = response_json
+        mock_resp.raise_for_status = MagicMock()
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        _state.set_state(initialized=True, api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "monitor"}})
+        clear_inspection_context()
+
+        req = {"model": "projects/p/locations/l/publishers/google/models/gemini-2.5-flash",
+               "contents": [{"role": "user", "parts": [{"text": "hello"}]}]}
+
+        result = _handle_prediction_gateway_call(
+            model_short_name="gemini-2.5-flash",
+            fq_model=req["model"],
+            request=req,
+            gw_settings=gw,
+        )
+        mock_client.post.assert_called_once()
+        assert result is not None
+
+    @patch("aidefense.runtime.agentsec.patchers._google_common.build_vertexai_gateway_url",
+           return_value="https://gw.example.com/v1/model:generateContent")
+    @patch("httpx.Client")
+    def test_gateway_body_excludes_model(self, mock_client_cls, _url):
+        gw = self._make_gw_settings()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "ok"}]}}]
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        clear_inspection_context()
+
+        req = {"model": "projects/p/locations/l/publishers/google/models/gem",
+               "contents": [{"role": "user", "parts": [{"text": "hi"}]}]}
+
+        _handle_prediction_gateway_call(
+            model_short_name="gem", fq_model=req["model"], request=req, gw_settings=gw,
+        )
+        body = _extract_post_body(mock_client)
+        assert "model" not in body
+        assert "contents" in body
+
+    def test_gateway_missing_url(self):
+        gw = self._make_gw_settings(url=None)
+        with pytest.raises(SecurityPolicyError):
+            _handle_prediction_gateway_call(
+                model_short_name="m", fq_model="m", request={}, gw_settings=gw,
+            )
+
+    def test_gateway_missing_api_key(self):
+        gw = self._make_gw_settings(api_key=None)
+        with pytest.raises(SecurityPolicyError):
+            _handle_prediction_gateway_call(
+                model_short_name="m", fq_model="m", request={}, gw_settings=gw,
+            )
+
+
+# ===========================================================================
+# _inspect_prediction_sync()
+# ===========================================================================
+
+class TestInspectPredictionSync:
+    @patch("aidefense.runtime.agentsec.patchers.vertexai._should_inspect", return_value=False)
+    def test_skip_when_should_inspect_false(self, _):
+        mock_wrapped = MagicMock(return_value="raw")
+        req = SimpleNamespace(
+            model="projects/p/locations/l/publishers/google/models/gem",
+            contents=[SimpleNamespace(role="user", parts=[SimpleNamespace(text="Hi")])],
+        )
+        result = _inspect_prediction_sync(mock_wrapped, None, (), {"request": req})
+        assert result == "raw"
+
+    @patch("aidefense.runtime.agentsec.patchers.vertexai._get_inspector")
+    @patch("aidefense.runtime.agentsec.patchers.vertexai.resolve_gateway_settings", return_value=None)
+    @patch("aidefense.runtime.agentsec.patchers.vertexai.extract_google_response", return_value="Reply")
+    @patch("aidefense.runtime.agentsec.patchers.vertexai.normalize_google_messages",
+           return_value=[{"role": "user", "content": "Hi"}])
+    def test_api_mode_pre_post_inspection(self, _norm, _extract, _gw, mock_get_inspector):
+        mock_inspector = MagicMock()
+        mock_inspector.inspect_conversation.return_value = Decision.allow(reasons=[])
+        mock_get_inspector.return_value = mock_inspector
+
+        _state.set_state(initialized=True, api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "monitor"}})
+        clear_inspection_context()
+
+        req = SimpleNamespace(
+            model="projects/p/locations/l/publishers/google/models/gem",
+            contents=[SimpleNamespace(role="user", parts=[SimpleNamespace(text="Hi")])],
+        )
+        mock_wrapped = MagicMock(return_value=SimpleNamespace(text="Reply"))
+        _inspect_prediction_sync(mock_wrapped, None, (), {"request": req})
+        assert mock_inspector.inspect_conversation.call_count == 2
+
+    @patch("aidefense.runtime.agentsec.patchers.vertexai._handle_prediction_gateway_call",
+           return_value=SimpleNamespace(text="GW"))
+    @patch("aidefense.runtime.agentsec.patchers.vertexai.resolve_gateway_settings")
+    @patch("aidefense.runtime.agentsec.patchers.vertexai.normalize_google_messages",
+           return_value=[{"role": "user", "content": "Hi"}])
+    def test_gateway_mode(self, _norm, mock_gw_settings, mock_gw_call):
+        mock_gw_settings.return_value = SimpleNamespace(
+            url="https://gw.example.com", api_key="key", fail_open=True, timeout=30, auth_mode="api_key",
+        )
+
+        _state.set_state(initialized=True, api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "monitor"}})
+        clear_inspection_context()
+
+        req = SimpleNamespace(
+            model="projects/p/locations/l/publishers/google/models/gem",
+            contents=[SimpleNamespace(role="user", parts=[SimpleNamespace(text="Hi")])],
+        )
+        result = _inspect_prediction_sync(MagicMock(), None, (), {"request": req})
+        assert result.text == "GW"
+        mock_gw_call.assert_called_once()
+
+
+# ===========================================================================
+# _inspect_prediction_stream_sync()
+# ===========================================================================
+
+class TestInspectPredictionStreamSync:
+    @patch("aidefense.runtime.agentsec.patchers.vertexai._should_inspect", return_value=False)
+    def test_skip_when_should_inspect_false(self, _):
+        mock_wrapped = MagicMock(return_value=iter(["chunk1"]))
+        req = SimpleNamespace(
+            model="projects/p/locations/l/publishers/google/models/gem",
+            contents=[],
+        )
+        result = _inspect_prediction_stream_sync(mock_wrapped, None, (), {"request": req})
+        assert list(result) == ["chunk1"]
+
+    @patch("aidefense.runtime.agentsec.patchers.vertexai._handle_prediction_gateway_call",
+           return_value=SimpleNamespace(text="GW"))
+    @patch("aidefense.runtime.agentsec.patchers.vertexai.resolve_gateway_settings")
+    @patch("aidefense.runtime.agentsec.patchers.vertexai.normalize_google_messages",
+           return_value=[{"role": "user", "content": "Hi"}])
+    def test_gateway_returns_single_chunk_iter(self, _norm, mock_gw_settings, mock_gw_call):
+        mock_gw_settings.return_value = SimpleNamespace(
+            url="https://gw.example.com", api_key="key", fail_open=True, timeout=30, auth_mode="api_key",
+        )
+
+        _state.set_state(initialized=True, api_mode={"llm_defaults": {"fail_open": True}, "llm": {"mode": "monitor"}})
+        clear_inspection_context()
+
+        req = SimpleNamespace(
+            model="projects/p/locations/l/publishers/google/models/gem",
+            contents=[SimpleNamespace(role="user", parts=[SimpleNamespace(text="Hi")])],
+        )
+        result = _inspect_prediction_stream_sync(MagicMock(), None, (), {"request": req})
+        chunks = list(result)
+        assert len(chunks) == 1
+        assert chunks[0].text == "GW"
+
+
+# ===========================================================================
+# _wrap_prediction_generate_content / _wrap_prediction_stream_generate_content
+# ===========================================================================
+
+class TestWrapPredictionGenerateContent:
+    @patch("aidefense.runtime.agentsec.patchers.vertexai._inspect_prediction_sync",
+           return_value="inspected")
+    def test_delegates_to_inspect(self, mock_inspect):
+        result = _wrap_prediction_generate_content(MagicMock(), None, (), {})
+        assert result == "inspected"
+        mock_inspect.assert_called_once()
+
+
+class TestWrapPredictionStreamGenerateContent:
+    @patch("aidefense.runtime.agentsec.patchers.vertexai._inspect_prediction_stream_sync",
+           return_value=iter(["chunk"]))
+    def test_delegates_to_inspect(self, mock_inspect):
+        result = _wrap_prediction_stream_generate_content(MagicMock(), None, (), {})
+        assert list(result) == ["chunk"]
+        mock_inspect.assert_called_once()

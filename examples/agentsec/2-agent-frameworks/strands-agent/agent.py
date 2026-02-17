@@ -90,7 +90,7 @@ def _sync_call_mcp_tool(tool_name: str, arguments: dict) -> str:
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(tool_name, arguments)
-                return result.content[0].text if result.content else "No answer"
+                return next((c.text for c in (result.content or []) if hasattr(c, "text")), "No answer")
     
     # Create a new event loop for this thread
     loop = asyncio.new_event_loop()
@@ -256,6 +256,17 @@ Tool usage: fetch_url(url='https://example.com')
             print(f"\n[ERROR] {type(e).__name__}: {e}", flush=True)
             import traceback
             traceback.print_exc()
+        # Cleanup MCP before returning
+        try:
+            if session_context:
+                await session_context.__aexit__(None, None, None)
+        except Exception as e:
+            logger.debug(f"MCP session cleanup: {type(e).__name__}")
+        try:
+            if mcp_context:
+                await mcp_context.__aexit__(None, None, None)
+        except Exception as e:
+            logger.debug(f"MCP context cleanup: {type(e).__name__}")
         return
     
     # Interactive mode

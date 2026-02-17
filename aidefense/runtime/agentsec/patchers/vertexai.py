@@ -8,6 +8,11 @@ It also patches the private _generate_content() method which is called
 directly by ChatSession.send_message() (used by AutoGen's GeminiClient),
 bypassing the public generate_content() method.
 
+Additionally, it patches the low-level PredictionServiceClient.generate_content()
+and stream_generate_content() methods from google-cloud-aiplatform (both v1 and
+v1beta1, sync and async).  These are used by LangChain's ChatVertexAI when
+GOOGLE_AI_SDK=vertexai, which bypasses GenerativeModel entirely.
+
 Gateway Mode Support:
 When llm_integration_mode=gateway, Vertex AI calls are sent directly
 to the provider-specific AI Defense Gateway in native format.
@@ -16,7 +21,7 @@ to the provider-specific AI Defense Gateway in native format.
 import contextvars
 import logging
 import threading
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
 import wrapt
 
@@ -202,6 +207,630 @@ def _deep_sanitize_vertexai(obj: Any) -> Any:
     return str(obj)
 
 
+# ---------------------------------------------------------------------------
+# PredictionServiceClient helpers (for ChatVertexAI / GOOGLE_AI_SDK=vertexai)
+# ---------------------------------------------------------------------------
+
+_MODEL_RE_SUFFIX = "/models/"
+
+
+def _extract_model_short_name(fq_model: str) -> str:
+    """Extract the short model name from a fully-qualified Vertex AI path.
+
+    ``projects/p/locations/l/publishers/google/models/gemini-2.5-flash``
+    -> ``gemini-2.5-flash``
+    """
+    if _MODEL_RE_SUFFIX in fq_model:
+        return fq_model.rsplit(_MODEL_RE_SUFFIX, 1)[-1]
+    # Already short
+    return fq_model
+
+
+def _extract_from_prediction_request(args, kwargs):
+    """Extract fields from a PredictionServiceClient.generate_content() call.
+
+    The gRPC client accepts either a full ``GenerateContentRequest`` object
+    (or dict) via the ``request`` parameter, *or* individual keyword
+    arguments (``model``, ``contents``).  We handle both.
+
+    Returns:
+        tuple: (request_obj_or_None, model_short_name, contents, fq_model)
+    """
+    request = kwargs.get("request")
+    if request is None and args:
+        request = args[0]
+
+    model = kwargs.get("model")
+    contents = kwargs.get("contents")
+
+    if request is not None:
+        # request can be a GenerateContentRequest proto or dict
+        if isinstance(request, dict):
+            model = model or request.get("model", "")
+            contents = contents or request.get("contents")
+        else:
+            model = model or getattr(request, "model", "")
+            contents = contents or getattr(request, "contents", None)
+
+    fq_model = model or "unknown"
+    short_name = _extract_model_short_name(fq_model)
+    return request, short_name, contents, fq_model
+
+
+def _clean_proto_dict(d: Any) -> Any:
+    """Remove proto-plus default artifacts from a to_dict() result.
+
+    Proto-plus ``to_dict()`` includes default-value fields like
+    ``"thought": false`` and ``"thought_signature": ""``.  The Vertex AI
+    gateway chokes on these unknown fields, so strip them.
+    """
+    if isinstance(d, dict):
+        cleaned = {}
+        for k, v in d.items():
+            # Skip common proto default artifacts
+            if k in ("thought", "thoughtSignature", "thought_signature") and not v:
+                continue
+            cleaned[k] = _clean_proto_dict(v)
+        return cleaned
+    if isinstance(d, list):
+        return [_clean_proto_dict(item) for item in d]
+    return d
+
+
+def _prediction_request_to_body(request, fq_model: str) -> Dict[str, Any]:
+    """Convert a GenerateContentRequest proto/dict to a REST-API request body.
+
+    The body is suitable for POSTing to the Vertex AI gateway.
+    The ``model`` field is NOT included because it goes in the URL path.
+
+    For proto-plus objects, ``to_json()`` is preferred over ``to_dict()``
+    because it produces proper REST-API JSON (camelCase keys, enum strings
+    like ``"STRING"`` instead of integers like ``1``).
+    """
+    if isinstance(request, dict):
+        body = {k: v for k, v in request.items() if k != "model" and v}
+        return _clean_proto_dict(body)
+
+    # Proto-plus object — prefer to_json() for correct REST field names
+    import json as _json
+    if hasattr(type(request), "to_json"):
+        try:
+            json_str = type(request).to_json(request)
+            d = _json.loads(json_str)
+            d.pop("model", None)
+            return _clean_proto_dict(d)
+        except Exception as exc:
+            logger.debug(f"[PredictionService] to_json() failed: {exc}, trying to_dict()")
+
+    # Fallback: to_dict() (field names may be Python-style snake_case)
+    if hasattr(type(request), "to_dict"):
+        try:
+            d = type(request).to_dict(request)
+            d.pop("model", None)
+            d = {k: v for k, v in d.items() if v not in (None, "", [], {})}
+            return _clean_proto_dict(d)
+        except Exception as exc:
+            logger.debug(f"[PredictionService] to_dict() failed: {exc}, falling back to manual extraction")
+
+    # Manual fallback
+    body: Dict[str, Any] = {}
+    if hasattr(request, "contents") and request.contents:
+        contents_list = []
+        for c in request.contents:
+            if hasattr(type(c), "to_json"):
+                try:
+                    contents_list.append(_json.loads(type(c).to_json(c)))
+                    continue
+                except Exception:
+                    pass
+            if hasattr(type(c), "to_dict"):
+                contents_list.append(_clean_proto_dict(type(c).to_dict(c)))
+            elif isinstance(c, dict):
+                contents_list.append(c)
+        body["contents"] = contents_list
+
+    for field in ("generation_config", "system_instruction", "tools",
+                  "tool_config", "safety_settings"):
+        val = getattr(request, field, None)
+        if val is not None:
+            serialized = _serialize_vertexai_obj(val)
+            if serialized:
+                camel = "".join(
+                    w.capitalize() if i else w
+                    for i, w in enumerate(field.split("_"))
+                )
+                body[camel] = serialized
+    return _clean_proto_dict(body)
+
+
+def _build_prediction_response(response_data: Dict, api_version: str = "v1beta1"):
+    """Build a PredictionService GenerateContentResponse from gateway JSON.
+
+    Tries to reconstruct a real proto-plus ``GenerateContentResponse`` so that
+    ``ChatVertexAI._gemini_response_to_chat_result()`` works correctly.
+    Falls back to the lightweight ``_VertexAIResponseWrapper`` if the proto
+    import or parsing fails.
+    """
+    try:
+        if api_version == "v1":
+            from google.cloud.aiplatform_v1.types import prediction_service as ps
+        else:
+            from google.cloud.aiplatform_v1beta1.types import prediction_service as ps
+
+        import json as _json
+        # Strip unknown fields that may break proto parsing
+        clean = _strip_unknown_fields(response_data)
+        resp = ps.GenerateContentResponse.from_json(
+            _json.dumps(clean)
+        )
+        logger.debug(f"[PredictionService GATEWAY] Built GenerateContentResponse proto ({api_version})")
+        return resp
+    except Exception as exc:
+        logger.warning(
+            f"[PredictionService GATEWAY] Could not build GenerateContentResponse "
+            f"({type(exc).__name__}: {exc}), falling back to wrapper"
+        )
+        return _VertexAIResponseWrapper(response_data)
+
+
+def _handle_prediction_gateway_call(
+    model_short_name: str,
+    fq_model: str,
+    request: Any,
+    gw_settings: Any,
+    api_version: str = "v1beta1",
+) -> Any:
+    """Route a PredictionServiceClient.generate_content() call through the gateway.
+
+    Args:
+        model_short_name: Short model name for URL construction.
+        fq_model: Fully-qualified model name for logging.
+        request: The original GenerateContentRequest proto/dict.
+        gw_settings: Gateway settings from agentsec config.
+        api_version: ``"v1"`` or ``"v1beta1"``.
+
+    Returns:
+        A ``GenerateContentResponse`` proto (or wrapper fallback).
+    """
+    import httpx
+
+    if not gw_settings.url:
+        raise SecurityPolicyError(
+            Decision.block(reasons=["Vertex AI gateway not configured"]),
+            "Gateway mode enabled but Vertex AI gateway URL not configured"
+        )
+
+    # Auth headers
+    if gw_settings.auth_mode == "google_adc":
+        from ._google_common import _build_google_auth_header
+        auth_headers = _build_google_auth_header(gw_settings)
+    else:
+        if not gw_settings.api_key:
+            raise SecurityPolicyError(
+                Decision.block(reasons=["Vertex AI gateway api_key not configured"]),
+                "auth_mode=api_key requires gateway_api_key"
+            )
+        auth_headers = {"Authorization": f"Bearer {gw_settings.api_key}"}
+
+    request_body = _prediction_request_to_body(request, fq_model)
+
+    from ._google_common import (
+        build_vertexai_gateway_url,
+        vertexai_gateway_post,
+        _has_multi_turn_contents,
+    )
+    try:
+        full_url = build_vertexai_gateway_url(
+            gw_settings.url, model_short_name, gw_settings, streaming=False,
+        )
+    except ValueError as exc:
+        raise SecurityPolicyError(Decision.block(reasons=[str(exc)]), str(exc))
+
+    logger.debug(f"[PredictionService GATEWAY] URL: {full_url}")
+    logger.debug(f"[PredictionService GATEWAY] Model: {model_short_name} (fq: {fq_model})")
+    logger.debug(f"[PredictionService GATEWAY] Body keys: {list(request_body.keys())}")
+
+    import json as _json
+    try:
+        _body_bytes = _json.dumps(request_body).encode("utf-8")
+    except TypeError:
+        logger.warning("[PredictionService GATEWAY] Applying deep sanitization")
+        request_body = _deep_sanitize_vertexai(request_body)
+        _body_bytes = _json.dumps(request_body).encode("utf-8")
+
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"[PredictionService GATEWAY] Body ({len(_body_bytes)} bytes): "
+                      f"{_body_bytes[:5000].decode('utf-8', errors='replace')}")
+
+    request_headers = {**auth_headers, "Content-Type": "application/json"}
+    try:
+        response = vertexai_gateway_post(
+            full_url, _body_bytes, request_headers, gw_settings,
+        )
+        response_data = response.json()
+
+        logger.debug("[PredictionService GATEWAY] Received response")
+        set_inspection_context(
+            decision=Decision.allow(reasons=["Gateway handled inspection"]),
+            done=True,
+        )
+        return _build_prediction_response(response_data, api_version)
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[PredictionService GATEWAY] HTTP error: {e}")
+        _resp_text = ""
+        try:
+            _resp_text = e.response.text[:1000] if hasattr(e.response, "text") else ""
+            logger.error(f"[PredictionService GATEWAY] HTTP {e.response.status_code} — body: {_resp_text}")
+        except Exception:
+            pass
+        if e.response.status_code == 500 and _has_multi_turn_contents(request_body.get("contents", [])):
+            logger.error(
+                "[PredictionService GATEWAY] HTTP 500 on multi-turn request. "
+                "This is a known gateway bug. See examples/agentsec/KNOWN_ISSUES.md. "
+                "Workaround: use llm_integration_mode=api."
+            )
+        if gw_settings.fail_open:
+            logger.warning("[PredictionService GATEWAY] fail_open=True, re-raising")
+            set_inspection_context(
+                decision=Decision.allow(reasons=["Gateway error, fail_open=True"]),
+                done=True,
+            )
+            raise
+        raise SecurityPolicyError(
+            Decision.block(reasons=["Gateway unavailable"]),
+            f"Gateway HTTP error: {e}",
+        )
+    except Exception as e:
+        logger.error(f"[PredictionService GATEWAY] Error: {e}")
+        if gw_settings.fail_open:
+            set_inspection_context(
+                decision=Decision.allow(reasons=["Gateway error, fail_open=True"]),
+                done=True,
+            )
+            raise
+        raise
+
+
+async def _handle_prediction_gateway_call_async(
+    model_short_name: str,
+    fq_model: str,
+    request: Any,
+    gw_settings: Any,
+    api_version: str = "v1beta1",
+) -> Any:
+    """Async variant of _handle_prediction_gateway_call."""
+    import httpx
+
+    if not gw_settings.url:
+        raise SecurityPolicyError(
+            Decision.block(reasons=["Vertex AI gateway not configured"]),
+            "Gateway mode enabled but Vertex AI gateway URL not configured"
+        )
+
+    if gw_settings.auth_mode == "google_adc":
+        from ._google_common import _build_google_auth_header
+        auth_headers = _build_google_auth_header(gw_settings)
+    else:
+        if not gw_settings.api_key:
+            raise SecurityPolicyError(
+                Decision.block(reasons=["Vertex AI gateway api_key not configured"]),
+                "auth_mode=api_key requires gateway_api_key"
+            )
+        auth_headers = {"Authorization": f"Bearer {gw_settings.api_key}"}
+
+    request_body = _prediction_request_to_body(request, fq_model)
+
+    from ._google_common import (
+        build_vertexai_gateway_url,
+        vertexai_gateway_post_async,
+        _has_multi_turn_contents,
+    )
+    try:
+        full_url = build_vertexai_gateway_url(
+            gw_settings.url, model_short_name, gw_settings, streaming=False,
+        )
+    except ValueError as exc:
+        raise SecurityPolicyError(Decision.block(reasons=[str(exc)]), str(exc))
+
+    logger.debug(f"[PredictionService GATEWAY async] URL: {full_url}")
+
+    import json as _json
+    try:
+        _body_bytes = _json.dumps(request_body).encode("utf-8")
+    except TypeError:
+        request_body = _deep_sanitize_vertexai(request_body)
+        _body_bytes = _json.dumps(request_body).encode("utf-8")
+
+    request_headers = {**auth_headers, "Content-Type": "application/json"}
+    try:
+        response = await vertexai_gateway_post_async(
+            full_url, _body_bytes, request_headers, gw_settings,
+        )
+        response_data = response.json()
+
+        logger.debug("[PredictionService GATEWAY async] Received response")
+        set_inspection_context(
+            decision=Decision.allow(reasons=["Gateway handled inspection"]),
+            done=True,
+        )
+        return _build_prediction_response(response_data, api_version)
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"[PredictionService GATEWAY async] HTTP error: {e}")
+        if e.response.status_code == 500 and _has_multi_turn_contents(request_body.get("contents", [])):
+            logger.error(
+                "[PredictionService GATEWAY async] HTTP 500 on multi-turn request. "
+                "This is a known gateway bug. See examples/agentsec/KNOWN_ISSUES.md. "
+                "Workaround: use llm_integration_mode=api."
+            )
+        if gw_settings.fail_open:
+            set_inspection_context(
+                decision=Decision.allow(reasons=["Gateway error, fail_open=True"]),
+                done=True,
+            )
+            raise
+        raise SecurityPolicyError(
+            Decision.block(reasons=["Gateway unavailable"]),
+            f"Gateway HTTP error: {e}",
+        )
+    except Exception as e:
+        logger.error(f"[PredictionService GATEWAY async] Error: {e}")
+        if gw_settings.fail_open:
+            set_inspection_context(
+                decision=Decision.allow(reasons=["Gateway error, fail_open=True"]),
+                done=True,
+            )
+            raise
+        raise
+
+
+# ---------------------------------------------------------------------------
+# PredictionServiceClient wrappers
+# ---------------------------------------------------------------------------
+
+def _inspect_prediction_sync(wrapped, instance, args, kwargs, entry="generate_content"):
+    """Shared sync inspection logic for PredictionServiceClient methods."""
+    request, model_short, contents, fq_model = _extract_from_prediction_request(args, kwargs)
+
+    set_inspection_context(done=False)
+    if not _should_inspect():
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} - inspection skipped")
+        return wrapped(*args, **kwargs)
+
+    normalized = normalize_google_messages(contents)
+    metadata = get_inspection_context().metadata
+    metadata["provider"] = "vertexai"
+    metadata["model"] = model_short
+
+    mode = _state.get_llm_mode()
+    integration_mode = _state.get_llm_integration_mode()
+    logger.debug("╔══════════════════════════════════════════════════════════════")
+    logger.debug(f"║ [PATCHED] LLM CALL: {model_short}")
+    logger.debug(f"║ Operation: PredictionService.{entry} | LLM Mode: {mode} | Integration: {integration_mode}")
+    logger.debug("╚══════════════════════════════════════════════════════════════")
+
+    # Gateway mode
+    gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} - Gateway mode")
+        return _handle_prediction_gateway_call(
+            model_short_name=model_short,
+            fq_model=fq_model,
+            request=request if request is not None else kwargs,
+            gw_settings=gw_settings,
+        )
+
+    # API mode: pre-inspect request
+    if normalized:
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} - Request inspection ({len(normalized)} messages)")
+        inspector = _get_inspector()
+        decision = inspector.inspect_conversation(normalized, metadata)
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} - Request decision: {decision.action}")
+        set_inspection_context(decision=decision)
+        _enforce_decision(decision)
+
+    logger.debug(f"[PATCHED CALL] PredictionService.{entry} - calling original method")
+    response = wrapped(*args, **kwargs)
+
+    # Post-inspect response
+    assistant_content = extract_google_response(response)
+    if assistant_content and normalized:
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} - Response inspection ({len(assistant_content)} chars)")
+        messages_with_response = normalized + [
+            {"role": "assistant", "content": assistant_content}
+        ]
+        inspector = _get_inspector()
+        decision = inspector.inspect_conversation(messages_with_response, metadata)
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} - Response decision: {decision.action}")
+        set_inspection_context(decision=decision, done=True)
+        _enforce_decision(decision)
+
+    logger.debug(f"[PATCHED CALL] PredictionService.{entry} - complete")
+    return response
+
+
+def _inspect_prediction_stream_sync(wrapped, instance, args, kwargs):
+    """Sync inspection for PredictionServiceClient.stream_generate_content()."""
+    request, model_short, contents, fq_model = _extract_from_prediction_request(args, kwargs)
+
+    set_inspection_context(done=False)
+    if not _should_inspect():
+        logger.debug("[PATCHED CALL] PredictionService.stream_generate_content - inspection skipped")
+        return wrapped(*args, **kwargs)
+
+    normalized = normalize_google_messages(contents)
+    metadata = get_inspection_context().metadata
+    metadata["provider"] = "vertexai"
+    metadata["model"] = model_short
+
+    mode = _state.get_llm_mode()
+    integration_mode = _state.get_llm_integration_mode()
+    logger.debug("╔══════════════════════════════════════════════════════════════")
+    logger.debug(f"║ [PATCHED] LLM CALL (stream): {model_short}")
+    logger.debug(f"║ Operation: PredictionService.stream_generate_content | LLM Mode: {mode} | Integration: {integration_mode}")
+    logger.debug("╚══════════════════════════════════════════════════════════════")
+
+    # Gateway mode: non-streaming call, wrap as single-chunk iterator
+    gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
+        logger.debug("[PATCHED CALL] PredictionService.stream_generate_content - Gateway mode (non-streaming proxy)")
+        resp = _handle_prediction_gateway_call(
+            model_short_name=model_short,
+            fq_model=fq_model,
+            request=request if request is not None else kwargs,
+            gw_settings=gw_settings,
+        )
+        return iter([resp])
+
+    # API mode: pre-inspect, then wrap stream for post-inspection
+    if normalized:
+        logger.debug(f"[PATCHED CALL] PredictionService.stream_generate_content - Request inspection ({len(normalized)} messages)")
+        inspector = _get_inspector()
+        decision = inspector.inspect_conversation(normalized, metadata)
+        logger.debug(f"[PATCHED CALL] PredictionService.stream_generate_content - Request decision: {decision.action}")
+        set_inspection_context(decision=decision)
+        _enforce_decision(decision)
+
+    logger.debug("[PATCHED CALL] PredictionService.stream_generate_content - calling original method")
+    original_stream = wrapped(*args, **kwargs)
+    return GoogleStreamingInspectionWrapper(original_stream, normalized or [], metadata)
+
+
+async def _inspect_prediction_async(wrapped, instance, args, kwargs, entry="generate_content"):
+    """Shared async inspection logic for PredictionServiceAsyncClient methods."""
+    request, model_short, contents, fq_model = _extract_from_prediction_request(args, kwargs)
+
+    set_inspection_context(done=False)
+    if not _should_inspect():
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} (async) - inspection skipped")
+        return await wrapped(*args, **kwargs)
+
+    normalized = normalize_google_messages(contents)
+    metadata = get_inspection_context().metadata
+    metadata["provider"] = "vertexai"
+    metadata["model"] = model_short
+
+    mode = _state.get_llm_mode()
+    integration_mode = _state.get_llm_integration_mode()
+    logger.debug("╔══════════════════════════════════════════════════════════════")
+    logger.debug(f"║ [PATCHED] LLM CALL (async): {model_short}")
+    logger.debug(f"║ Operation: PredictionService.{entry} (async) | LLM Mode: {mode} | Integration: {integration_mode}")
+    logger.debug("╚══════════════════════════════════════════════════════════════")
+
+    # Gateway mode
+    gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} (async) - Gateway mode")
+        return await _handle_prediction_gateway_call_async(
+            model_short_name=model_short,
+            fq_model=fq_model,
+            request=request if request is not None else kwargs,
+            gw_settings=gw_settings,
+        )
+
+    # API mode: pre-inspect
+    if normalized:
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} (async) - Request inspection ({len(normalized)} messages)")
+        inspector = _get_inspector()
+        decision = await inspector.ainspect_conversation(normalized, metadata)
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} (async) - Request decision: {decision.action}")
+        set_inspection_context(decision=decision)
+        _enforce_decision(decision)
+
+    logger.debug(f"[PATCHED CALL] PredictionService.{entry} (async) - calling original method")
+    response = await wrapped(*args, **kwargs)
+
+    # Post-inspect response
+    assistant_content = extract_google_response(response)
+    if assistant_content and normalized:
+        messages_with_response = normalized + [
+            {"role": "assistant", "content": assistant_content}
+        ]
+        decision = await inspector.ainspect_conversation(messages_with_response, metadata)
+        logger.debug(f"[PATCHED CALL] PredictionService.{entry} (async) - Response decision: {decision.action}")
+        set_inspection_context(decision=decision, done=True)
+        _enforce_decision(decision)
+
+    logger.debug(f"[PATCHED CALL] PredictionService.{entry} (async) - complete")
+    return response
+
+
+async def _inspect_prediction_stream_async(wrapped, instance, args, kwargs):
+    """Async inspection for PredictionServiceAsyncClient.stream_generate_content()."""
+    request, model_short, contents, fq_model = _extract_from_prediction_request(args, kwargs)
+
+    set_inspection_context(done=False)
+    if not _should_inspect():
+        logger.debug("[PATCHED CALL] PredictionService.stream_generate_content (async) - inspection skipped")
+        return await wrapped(*args, **kwargs)
+
+    normalized = normalize_google_messages(contents)
+    metadata = get_inspection_context().metadata
+    metadata["provider"] = "vertexai"
+    metadata["model"] = model_short
+
+    mode = _state.get_llm_mode()
+    integration_mode = _state.get_llm_integration_mode()
+    logger.debug("╔══════════════════════════════════════════════════════════════")
+    logger.debug(f"║ [PATCHED] LLM CALL (async stream): {model_short}")
+    logger.debug(f"║ Operation: PredictionService.stream_generate_content (async) | LLM Mode: {mode} | Integration: {integration_mode}")
+    logger.debug("╚══════════════════════════════════════════════════════════════")
+
+    # Gateway mode
+    gw_settings = resolve_gateway_settings("vertexai")
+    if gw_settings:
+        logger.debug("[PATCHED CALL] PredictionService.stream_generate_content (async) - Gateway mode")
+        resp = await _handle_prediction_gateway_call_async(
+            model_short_name=model_short,
+            fq_model=fq_model,
+            request=request if request is not None else kwargs,
+            gw_settings=gw_settings,
+        )
+
+        async def _single_chunk():
+            yield resp
+
+        return _single_chunk()
+
+    # API mode: pre-inspect, then wrap stream
+    if normalized:
+        logger.debug(f"[PATCHED CALL] PredictionService.stream_generate_content (async) - Request inspection ({len(normalized)} messages)")
+        inspector = _get_inspector()
+        decision = await inspector.ainspect_conversation(normalized, metadata)
+        logger.debug(f"[PATCHED CALL] PredictionService.stream_generate_content (async) - Request decision: {decision.action}")
+        set_inspection_context(decision=decision)
+        _enforce_decision(decision)
+
+    logger.debug("[PATCHED CALL] PredictionService.stream_generate_content (async) - calling original method")
+    original_stream = await wrapped(*args, **kwargs)
+    return AsyncGoogleStreamingInspectionWrapper(original_stream, normalized or [], metadata)
+
+
+def _wrap_prediction_generate_content(wrapped, instance, args, kwargs):
+    """Wrapper for PredictionServiceClient.generate_content()."""
+    return _inspect_prediction_sync(wrapped, instance, args, kwargs, entry="generate_content")
+
+
+def _wrap_prediction_stream_generate_content(wrapped, instance, args, kwargs):
+    """Wrapper for PredictionServiceClient.stream_generate_content()."""
+    return _inspect_prediction_stream_sync(wrapped, instance, args, kwargs)
+
+
+async def _wrap_prediction_generate_content_async(wrapped, instance, args, kwargs):
+    """Wrapper for PredictionServiceAsyncClient.generate_content()."""
+    return await _inspect_prediction_async(wrapped, instance, args, kwargs, entry="generate_content")
+
+
+async def _wrap_prediction_stream_generate_content_async(wrapped, instance, args, kwargs):
+    """Wrapper for PredictionServiceAsyncClient.stream_generate_content()."""
+    return await _inspect_prediction_stream_async(wrapped, instance, args, kwargs)
+
+
+# ---------------------------------------------------------------------------
+# GenerativeModel gateway call handler (original)
+# ---------------------------------------------------------------------------
+
 def _handle_vertexai_gateway_call(
     model_name: str,
     contents: Any,
@@ -298,7 +927,11 @@ def _handle_vertexai_gateway_call(
             request_body["systemInstruction"] = {"parts": parts}
     
     # Build full Vertex AI gateway URL with API path
-    from ._google_common import build_vertexai_gateway_url
+    from ._google_common import (
+        build_vertexai_gateway_url,
+        vertexai_gateway_post,
+        _has_multi_turn_contents,
+    )
     try:
         full_gateway_url = build_vertexai_gateway_url(
             gw_settings.url, model_name, gw_settings, streaming=False,
@@ -327,18 +960,12 @@ def _handle_vertexai_gateway_call(
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(f"[GATEWAY] Full request body ({len(_body_bytes)} bytes): {_body_bytes[:5000].decode('utf-8', errors='replace')}")
 
+    request_headers = {**auth_headers, "Content-Type": "application/json"}
     try:
-        with httpx.Client(timeout=float(gw_settings.timeout)) as client:
-            response = client.post(
-                full_gateway_url,
-                content=_body_bytes,
-                headers={
-                    **auth_headers,
-                    "Content-Type": "application/json",
-                },
-            )
-            response.raise_for_status()
-            response_data = response.json()
+        response = vertexai_gateway_post(
+            full_gateway_url, _body_bytes, request_headers, gw_settings,
+        )
+        response_data = response.json()
         
         logger.debug(f"[GATEWAY] Received native Vertex AI response from gateway")
         set_inspection_context(decision=Decision.allow(reasons=["Gateway handled inspection"]), done=True)
@@ -465,6 +1092,11 @@ class _VertexAIResponseWrapper:
         except (IndexError, AttributeError):
             return ""
     
+    @property
+    def usage_metadata(self):
+        """Return usage metadata dict (or None) for ChatVertexAI compatibility."""
+        return self._data.get("usageMetadata") or self._data.get("usage_metadata")
+
     def to_dict(self):
         return self._data
 
@@ -866,7 +1498,11 @@ async def _handle_vertexai_gateway_call_async(
             request_body["systemInstruction"] = {"parts": parts}
     
     # Build full Vertex AI gateway URL with API path
-    from ._google_common import build_vertexai_gateway_url
+    from ._google_common import (
+        build_vertexai_gateway_url,
+        vertexai_gateway_post_async,
+        _has_multi_turn_contents,
+    )
     try:
         full_gateway_url = build_vertexai_gateway_url(
             gw_settings.url, model_name, gw_settings, streaming=False,
@@ -880,18 +1516,19 @@ async def _handle_vertexai_gateway_call_async(
     logger.debug(f"[GATEWAY] Sending native Vertex AI request to gateway (async)")
     logger.debug(f"[GATEWAY] URL: {full_gateway_url}")
     
+    import json as _json
     try:
-        async with httpx.AsyncClient(timeout=float(gw_settings.timeout)) as client:
-            response = await client.post(
-                full_gateway_url,
-                json=request_body,
-                headers={
-                    **auth_headers,
-                    "Content-Type": "application/json",
-                },
-            )
-            response.raise_for_status()
-            response_data = response.json()
+        _body_bytes = _json.dumps(request_body).encode("utf-8")
+    except TypeError:
+        request_body = _deep_sanitize_vertexai(request_body)
+        _body_bytes = _json.dumps(request_body).encode("utf-8")
+    
+    request_headers = {**auth_headers, "Content-Type": "application/json"}
+    try:
+        response = await vertexai_gateway_post_async(
+            full_gateway_url, _body_bytes, request_headers, gw_settings,
+        )
+        response_data = response.json()
         
         logger.debug(f"[GATEWAY] Received native Vertex AI response from gateway (async)")
         set_inspection_context(decision=Decision.allow(reasons=["Gateway handled inspection"]), done=True)
@@ -900,23 +1537,27 @@ async def _handle_vertexai_gateway_call_async(
         
     except httpx.HTTPStatusError as e:
         logger.error(f"[GATEWAY] HTTP error: {e}")
+        if e.response.status_code == 500 and _has_multi_turn_contents(contents_list):
+            logger.error(
+                "[GATEWAY] HTTP 500 on multi-turn request (contents has %d messages). "
+                "This is a known gateway bug. See examples/agentsec/KNOWN_ISSUES.md. "
+                "Workaround: use llm_integration_mode=api.",
+                len(contents_list),
+            )
         if gw_settings.fail_open:
-            # fail_open=True: allow request to proceed by re-raising original error
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original HTTP error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
-            raise  # Re-raise original HTTP error, not SecurityPolicyError
-        else:
-            # fail_open=False: block the request with SecurityPolicyError
-            raise SecurityPolicyError(
-                Decision.block(reasons=["Gateway unavailable"]),
-                f"Gateway HTTP error: {e}"
-            )
+            raise
+        raise SecurityPolicyError(
+            Decision.block(reasons=["Gateway unavailable"]),
+            f"Gateway HTTP error: {e}"
+        )
     except Exception as e:
         logger.error(f"[GATEWAY] Error: {e}")
         if gw_settings.fail_open:
             logger.warning(f"[GATEWAY] fail_open=True, re-raising original error for caller to handle")
             set_inspection_context(decision=Decision.allow(reasons=["Gateway error, fail_open=True"]), done=True)
-            raise  # Re-raise original error
+            raise
         raise
 
 
@@ -1236,6 +1877,70 @@ def patch_vertexai() -> bool:
             except Exception as e:
                 logger.debug(f"Could not patch _generate_content_async: {e}")
         
+        # ------------------------------------------------------------------
+        # Patch PredictionServiceClient (used by LangChain's ChatVertexAI
+        # when GOOGLE_AI_SDK=vertexai).
+        # ------------------------------------------------------------------
+        _PSC_TARGETS = [
+            # (module_path, class.method, wrapper, description)
+            (
+                "google.cloud.aiplatform_v1beta1.services.prediction_service.client",
+                "PredictionServiceClient.generate_content",
+                _wrap_prediction_generate_content,
+                "v1beta1 PredictionServiceClient.generate_content",
+            ),
+            (
+                "google.cloud.aiplatform_v1beta1.services.prediction_service.client",
+                "PredictionServiceClient.stream_generate_content",
+                _wrap_prediction_stream_generate_content,
+                "v1beta1 PredictionServiceClient.stream_generate_content",
+            ),
+            (
+                "google.cloud.aiplatform_v1.services.prediction_service.client",
+                "PredictionServiceClient.generate_content",
+                _wrap_prediction_generate_content,
+                "v1 PredictionServiceClient.generate_content",
+            ),
+            (
+                "google.cloud.aiplatform_v1.services.prediction_service.client",
+                "PredictionServiceClient.stream_generate_content",
+                _wrap_prediction_stream_generate_content,
+                "v1 PredictionServiceClient.stream_generate_content",
+            ),
+            # Async clients
+            (
+                "google.cloud.aiplatform_v1beta1.services.prediction_service.async_client",
+                "PredictionServiceAsyncClient.generate_content",
+                _wrap_prediction_generate_content_async,
+                "v1beta1 PredictionServiceAsyncClient.generate_content",
+            ),
+            (
+                "google.cloud.aiplatform_v1beta1.services.prediction_service.async_client",
+                "PredictionServiceAsyncClient.stream_generate_content",
+                _wrap_prediction_stream_generate_content_async,
+                "v1beta1 PredictionServiceAsyncClient.stream_generate_content",
+            ),
+            (
+                "google.cloud.aiplatform_v1.services.prediction_service.async_client",
+                "PredictionServiceAsyncClient.generate_content",
+                _wrap_prediction_generate_content_async,
+                "v1 PredictionServiceAsyncClient.generate_content",
+            ),
+            (
+                "google.cloud.aiplatform_v1.services.prediction_service.async_client",
+                "PredictionServiceAsyncClient.stream_generate_content",
+                _wrap_prediction_stream_generate_content_async,
+                "v1 PredictionServiceAsyncClient.stream_generate_content",
+            ),
+        ]
+
+        for mod_path, method_path, wrapper, desc in _PSC_TARGETS:
+            try:
+                wrapt.wrap_function_wrapper(mod_path, method_path, wrapper)
+                logger.debug(f"Patched {desc}")
+            except Exception as e:
+                logger.debug(f"Could not patch {desc}: {e}")
+
         mark_patched("vertexai")
         logger.info("VertexAI patched successfully")
         return True

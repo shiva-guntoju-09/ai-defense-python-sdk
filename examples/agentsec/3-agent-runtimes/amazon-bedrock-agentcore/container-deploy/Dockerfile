@@ -21,7 +21,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Install pip dependencies (excluding cisco-aidefense-sdk which isn't on PyPI)
 COPY container-deploy/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir strands-agents bedrock-agentcore python-dotenv httpx wrapt pyyaml aiohttp pydantic requests
+RUN pip install --no-cache-dir strands-agents bedrock-agentcore python-dotenv httpx wrapt pyyaml aiohttp pydantic requests tenacity
 
 # Copy aidefense SDK from the repository (since it's not on PyPI)
 # The deploy.sh script copies aidefense to the root directory before build
