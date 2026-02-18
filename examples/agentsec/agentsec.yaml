@@ -138,28 +138,29 @@ gateway_mode:
   #   api_key                    - API key sent in "api-key" header
   #   oauth2_client_credentials  - OAuth 2.0 Client Credentials grant
   mcp_gateways:
-    https://remote.mcpservers.org/fetch/mcp:
-      gateway_url: ${MCP_FETCH_GATEWAY_URL}
-      auth_mode: none
+    # Mock MCP server details (mcp-testing.aiteam.cisco.com)
+    # Health check:
+    #   https://mcp-testing.aiteam.cisco.com/mock_mcp/health
+    # OAuth metadata:
+    #   Resource metadata: https://mcp-testing.aiteam.cisco.com/mock_mcp/.well-known/oauth-protected-resource
+    #   Auth server metadata: https://mcp-testing.aiteam.cisco.com/mock_mcp/.well-known/oauth-authorization-server
+    # OAuth auth endpoint:
+    #   https://mcp-testing.aiteam.cisco.com/mock_mcp/oauth/authorize
 
-    https://mcp.time.mcpcentral.io:
-      gateway_url: ${MCP_TIME_GATEWAY_URL}
-      auth_mode: none
+    # API Key server
+    https://mcp-testing.aiteam.cisco.com/mock_mcp/mcp/api-key:
+      gateway_url: ${AGENTSEC_MCP_API_KEY_GATEWAY_URL}
+      auth_mode: api_key
+      gateway_api_key: ${MCP_API_KEY}
 
-    # -- Example: API Key auth --
-    # https://api-key-mcp.example.com/mcp:
-    #   gateway_url: https://gw.agent.aidefense.cisco.com/mcp/t1/apikey-server
-    #   auth_mode: api_key
-    #   gateway_api_key: ${MCP_GATEWAY_API_KEY}
-
-    # -- Example: OAuth 2.0 Client Credentials --
-    # https://oauth-mcp.example.com/mcp:
-    #   gateway_url: https://gw.agent.aidefense.cisco.com/mcp/t1/oauth-server
-    #   auth_mode: oauth2_client_credentials
-    #   oauth2_token_url: https://auth.example.com/oauth/token
-    #   oauth2_client_id: ${MCP_OAUTH_CLIENT_ID}
-    #   oauth2_client_secret: ${MCP_OAUTH_CLIENT_SECRET}
-    #   oauth2_scopes: "read write"
+    # OAuth 2.0 server (Client Credentials)
+    https://mcp-testing.aiteam.cisco.com/mock_mcp/mcp/oauth:
+      gateway_url: ${AGENTSEC_MCP_OAUTH_GATEWAY_URL}
+      auth_mode: oauth2_client_credentials
+      oauth2_token_url: https://mcp-testing.aiteam.cisco.com/mock_mcp/oauth/token
+      oauth2_client_id: ${MCP_OAUTH_CLIENT_ID}
+      oauth2_client_secret: ${MCP_OAUTH_CLIENT_SECRET}
+      oauth2_scopes: ${MCP_OAUTH_SCOPES}
 
 # -- API mode configuration --------------------------------------------------
 # Used when llm_integration_mode or mcp_integration_mode is "api".
