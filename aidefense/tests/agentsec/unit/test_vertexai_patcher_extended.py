@@ -440,8 +440,9 @@ class TestHandleVertexAIGatewayCall:
 
         clear_inspection_context()
         result = _handle_vertexai_gateway_call("gemini-2.0-flash", "Hello", self._gw())
-        assert isinstance(result, _VertexAIResponseWrapper)
-        assert result.text == "Hi"
+        # Implementation may return native GenerationResponse (when from_dict succeeds)
+        # or _VertexAIResponseWrapper (fallback); both provide .text
+        assert hasattr(result, "text") and result.text == "Hi"
 
     @patch("aidefense.runtime.agentsec.patchers._google_common.build_vertexai_gateway_url",
            return_value="https://gw.example.com/v1/model:generateContent")
