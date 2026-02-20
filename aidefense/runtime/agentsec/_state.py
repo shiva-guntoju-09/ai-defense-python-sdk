@@ -29,7 +29,7 @@ from .config import (
 VALID_API_MODES = set(_VALID_MODES_TUPLE)
 VALID_GATEWAY_MODES = set(_VALID_GATEWAY_MODES_TUPLE)
 VALID_INTEGRATION_MODES = set(_VALID_INTEGRATION_MODES_TUPLE)
-VALID_AUTH_MODES = {"none", "api_key", "aws_sigv4", "google_adc", "oauth2_client_credentials"}
+VALID_AUTH_MODES = {"none", "api_key", "aws_sigv4", "google_adc", "oauth2_client_credentials", "client"}
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 VALID_LOG_FORMATS = {"text", "json"}
 
@@ -407,6 +407,7 @@ def resolve_llm_gateway_settings(
     return GatewaySettings(
         url=raw_config.get("gateway_url", ""),
         api_key=raw_config.get("gateway_api_key"),
+        api_key_header=raw_config.get("gateway_api_key_header", "api-key"),
         auth_mode=auth_mode,
         fail_open=raw_config.get("fail_open", _gw_llm_fail_open),
         timeout=raw_config.get("timeout", _gw_llm_timeout),
@@ -432,15 +433,15 @@ def resolve_mcp_gateway_settings(raw_config: dict) -> GatewaySettings:
 
     Merges per-gateway overrides with gateway_mode.mcp_defaults.
 
-    Auth mode inference for backward compatibility:
+    Auth mode inference:
     - If ``auth_mode`` is explicitly set, use it as-is.
-    - If ``auth_mode`` is absent but ``gateway_api_key`` is present,
-      infer ``auth_mode = "api_key"`` (backward compat).
+    - If ``auth_mode`` is absent but ``api_key`` is present,
+      infer ``auth_mode = "api_key"``.
     - Otherwise default to ``"none"`` (no auth).
 
     Args:
-        raw_config: A dict with keys like gateway_url, gateway_api_key,
-            auth_mode, fail_open, timeout, retry (sub-dict),
+        raw_config: A dict with keys like gateway_url, api_key,
+            api_key_header, auth_mode, fail_open, timeout, retry (sub-dict),
             oauth2_token_url, oauth2_client_id, oauth2_client_secret,
             oauth2_scopes.
 
@@ -462,12 +463,14 @@ def resolve_mcp_gateway_settings(raw_config: dict) -> GatewaySettings:
             "in MCP gateway configuration."
         )
 
+    mcp_api_key = raw_config.get("api_key")
+    mcp_api_key_header = raw_config.get("api_key_header") or "api-key"
+
     # Infer auth_mode for backward compatibility
     explicit_auth_mode = raw_config.get("auth_mode")
     if explicit_auth_mode is not None:
         auth_mode = explicit_auth_mode
-    elif raw_config.get("gateway_api_key"):
-        # Backward compat: api_key present without explicit auth_mode
+    elif mcp_api_key:
         auth_mode = "api_key"
     else:
         auth_mode = "none"
@@ -481,7 +484,8 @@ def resolve_mcp_gateway_settings(raw_config: dict) -> GatewaySettings:
 
     return GatewaySettings(
         url=raw_config.get("gateway_url", ""),
-        api_key=raw_config.get("gateway_api_key"),
+        api_key=mcp_api_key,
+        api_key_header=mcp_api_key_header,
         auth_mode=auth_mode,
         fail_open=raw_config.get("fail_open", _gw_mcp_fail_open),
         timeout=raw_config.get("timeout", _gw_mcp_timeout),

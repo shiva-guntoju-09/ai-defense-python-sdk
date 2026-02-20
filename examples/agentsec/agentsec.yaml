@@ -137,7 +137,37 @@ gateway_mode:
   #   none                       - No authentication (default)
   #   api_key                    - API key sent in "api-key" header
   #   oauth2_client_credentials  - OAuth 2.0 Client Credentials grant
+  #   client                     - Forward client's own auth headers to gateway
   mcp_gateways:
+    https://remote.mcpservers.org/fetch/mcp:
+      gateway_url: ${MCP_FETCH_GATEWAY_URL}
+      auth_mode: none
+
+    https://mcp.time.mcpcentral.io:
+      gateway_url: ${MCP_TIME_GATEWAY_URL}
+      auth_mode: none
+
+    # -- Example: API Key auth --
+    # https://api-key-mcp.example.com/mcp:
+    #   gateway_url: https://gw.agent.aidefense.cisco.com/mcp/t1/apikey-server
+    #   auth_mode: api_key
+    #   api_key: ${MCP_SERVER_API_KEY}
+    #   api_key_header: X-API-Key   # optional, defaults to "api-key"
+
+    # -- Example: Client auth passthrough (recommended when client handles auth) --
+    # https://oauth-mcp.example.com/mcp:
+    #   gateway_url: https://gw.agent.aidefense.cisco.com/mcp/t1/oauth-server
+    #   auth_mode: client
+
+    # -- Example: OAuth 2.0 Client Credentials (agentsec fetches token) --
+    # https://oauth-mcp.example.com/mcp:
+    #   gateway_url: https://gw.agent.aidefense.cisco.com/mcp/t1/oauth-server
+    #   auth_mode: oauth2_client_credentials
+    #   oauth2_token_url: https://auth.example.com/oauth/token
+    #   oauth2_client_id: ${MCP_OAUTH_CLIENT_ID}
+    #   oauth2_client_secret: ${MCP_OAUTH_CLIENT_SECRET}
+    #   oauth2_scopes: "read write"
+
     # Mock MCP server details (mcp-testing.aiteam.cisco.com)
     # Health check:
     #   https://mcp-testing.aiteam.cisco.com/mock_mcp/health
@@ -147,20 +177,32 @@ gateway_mode:
     # OAuth auth endpoint:
     #   https://mcp-testing.aiteam.cisco.com/mock_mcp/oauth/authorize
 
-    # API Key server
+    # API Key server — forward the client's auth headers to the gateway.
     https://mcp-testing.aiteam.cisco.com/mock_mcp/mcp/api-key:
       gateway_url: ${AGENTSEC_MCP_API_KEY_GATEWAY_URL}
-      auth_mode: api_key
-      gateway_api_key: ${MCP_API_KEY}
+      auth_mode: client
 
-    # OAuth 2.0 server (Client Credentials)
+    # -- Alternative: let agentsec inject the API key (no client auth needed) --
+    # https://mcp-testing.aiteam.cisco.com/mock_mcp/mcp/api-key:
+    #   gateway_url: ${AGENTSEC_MCP_API_KEY_GATEWAY_URL}
+    #   auth_mode: api_key
+    #   api_key: ${MCP_API_KEY}
+
+    # OAuth 2.0 server — forward the client's auth headers to the gateway.
+    # The client fetches the OAuth token and passes it in headers;
+    # agentsec forwards those headers to the gateway as-is.
     https://mcp-testing.aiteam.cisco.com/mock_mcp/mcp/oauth:
       gateway_url: ${AGENTSEC_MCP_OAUTH_GATEWAY_URL}
-      auth_mode: oauth2_client_credentials
-      oauth2_token_url: https://mcp-testing.aiteam.cisco.com/mock_mcp/oauth/token
-      oauth2_client_id: ${MCP_OAUTH_CLIENT_ID}
-      oauth2_client_secret: ${MCP_OAUTH_CLIENT_SECRET}
-      oauth2_scopes: ${MCP_OAUTH_SCOPES}
+      auth_mode: client
+
+    # -- Alternative: let agentsec fetch the OAuth token (no client auth needed) --
+    # https://mcp-testing.aiteam.cisco.com/mock_mcp/mcp/oauth:
+    #   gateway_url: ${AGENTSEC_MCP_OAUTH_GATEWAY_URL}
+    #   auth_mode: oauth2_client_credentials
+    #   oauth2_token_url: https://mcp-testing.aiteam.cisco.com/mock_mcp/oauth/token
+    #   oauth2_client_id: ${MCP_OAUTH_CLIENT_ID}
+    #   oauth2_client_secret: ${MCP_OAUTH_CLIENT_SECRET}
+    #   oauth2_scopes: ${MCP_OAUTH_SCOPES}
 
 # -- API mode configuration --------------------------------------------------
 # Used when llm_integration_mode or mcp_integration_mode is "api".

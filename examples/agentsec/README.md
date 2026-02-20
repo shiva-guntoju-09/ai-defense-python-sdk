@@ -1150,6 +1150,28 @@ cd /path/to/ai-defense-python-sdk
 | Poetry version error | Remove `package-mode = false` from pyproject.toml if using older Poetry |
 | Vertex AI gateway 400 `Invalid JSON payload` | Known AI Defense gateway limitation: request bodies larger than ~2700 bytes are corrupted during forwarding. Use `llm_integration_mode: api` for Vertex AI / google-genai until the gateway team resolves this. |
 
+### GCP credentials and resources (Vertex tests)
+
+Vertex / Gemini tests use **Application Default Credentials (ADC)**. If Vertex tests fail with `RefreshError: invalid_scope` or worked a few days ago but fail now, ADC has likely **expired** or was created without the scope the client needs.
+
+**GCP resources used:**
+
+| SDK / path | GCP API | Scope required |
+|------------|---------|----------------|
+| **google_genai** (e.g. `GOOGLE_AI_SDK=google_genai`, LangChain `ChatGoogleGenerativeAI`) | **Generative Language API** (`generativelanguage.googleapis.com`) | `https://www.googleapis.com/auth/generative-language` or `cloud-platform` |
+| **vertexai** (e.g. `GOOGLE_AI_SDK=vertexai`, `ChatVertexAI` / `vertexai.GenerativeModel`) | **Vertex AI API** (e.g. `us-central1-aiplatform.googleapis.com`) | `https://www.googleapis.com/auth/cloud-platform` |
+| **Gateway mode** (SDK calling AI Defense Gateway) | Gateway uses ADC to call GCP on your behalf | `cloud-platform` (gateway only) |
+
+**Fix — refresh ADC with the right scopes (recommended):**
+
+```bash
+gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/generative-language
+```
+
+Then re-run the Vertex tests. This stores credentials that work for both the Generative Language API (google_genai) and Vertex AI (vertexai). If you only use the vertexai SDK, `gcloud auth application-default login` (no extra scopes) is usually enough.
+
+**Alternative:** Use the Vertex AI SDK so only Vertex AI is used: set `GOOGLE_AI_SDK=vertexai` in `.env` (and in `agentsec.yaml` for the vertexai gateway). Then standard ADC (`gcloud auth application-default login`) is sufficient and you do not need the `generative-language` scope.
+
 ### Debug Logging
 
 By default, agentsec operates quietly (log level `WARNING`). To see what's happening under the hood - including messages sent to AI Defense, responses received, and inspection decisions - enable debug logging.

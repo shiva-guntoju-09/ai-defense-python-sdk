@@ -437,12 +437,12 @@ class TestResolveGatewaySettings:
         assert settings.auth_mode == "none"
 
     def test_resolve_mcp_auth_mode_inferred_from_api_key(self):
-        """auth_mode inferred as 'api_key' when gateway_api_key is present but no auth_mode."""
+        """auth_mode inferred as 'api_key' when api_key is present but no auth_mode."""
         _state.set_state(initialized=True)
         settings = _state.resolve_mcp_gateway_settings(
             {
                 "gateway_url": "https://mcp-gw.example.com",
-                "gateway_api_key": "some-key",
+                "api_key": "some-key",
             },
         )
         assert settings.auth_mode == "api_key"
@@ -454,7 +454,7 @@ class TestResolveGatewaySettings:
         settings = _state.resolve_mcp_gateway_settings(
             {
                 "gateway_url": "https://mcp-gw.example.com",
-                "gateway_api_key": "some-key",
+                "api_key": "some-key",
                 "auth_mode": "none",
             },
         )

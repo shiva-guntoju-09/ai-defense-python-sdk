@@ -233,13 +233,13 @@ gateway_mode:
     https://mcp.example.com:
       gateway_url: https://gw.example.com/mcp
       auth_mode: api_key
-      gateway_api_key: ${MY_MCP_KEY}
+      api_key: ${MY_MCP_KEY}
 """
         path = self._write_yaml(content)
         result = load_config_file(path)
         gw = result["gateway_mode"]["mcp_gateways"]["https://mcp.example.com"]
         assert gw["auth_mode"] == "api_key"
-        assert gw["gateway_api_key"] == "secret-mcp-key"
+        assert gw["api_key"] == "secret-mcp-key"
         os.unlink(path)
 
     def test_mcp_gateway_auth_mode_oauth2(self, monkeypatch):

@@ -187,7 +187,7 @@ class TestMCPGatewayURLRedirection:
                 "mcp_gateways": {
                     "https://original-server.com/mcp": {
                         "gateway_url": "https://gateway.example.com/mcp/server/123",
-                        "gateway_api_key": "test-api-key",
+                        "api_key": "test-api-key",
                     }
                 }
             },
@@ -213,7 +213,7 @@ class TestMCPGatewayURLRedirection:
                 "mcp_gateways": {
                     "https://configured-server.com/mcp": {
                         "gateway_url": "https://gateway.example.com/mcp",
-                        "gateway_api_key": "configured-key",
+                        "api_key": "configured-key",
                     }
                 }
             },
@@ -256,7 +256,7 @@ class TestMCPGatewayURLRedirection:
                 "mcp_gateways": {
                     "https://original-server.com/mcp": {
                         "gateway_url": "https://gateway.example.com/mcp",
-                        "gateway_api_key": "test-key",
+                        "api_key": "test-key",
                     },
                 },
             },
@@ -308,7 +308,7 @@ class TestMCPGatewayURLRedirection:
                     "https://apikey-server.com/mcp": {
                         "gateway_url": "https://gateway.example.com/mcp/apikey",
                         "auth_mode": "api_key",
-                        "gateway_api_key": "my-api-key",
+                        "api_key": "my-api-key",
                     }
                 }
             },
@@ -372,7 +372,7 @@ class TestMCPGatewayURLRedirection:
                 "mcp_gateways": {
                     "https://legacy-server.com/mcp": {
                         "gateway_url": "https://gateway.example.com/mcp/legacy",
-                        "gateway_api_key": "legacy-key",
+                        "api_key": "legacy-key",
                         # no auth_mode field — should be inferred as "api_key"
                     }
                 }

@@ -14,13 +14,17 @@ class GatewaySettings:
 
     Attributes:
         url: The gateway URL to proxy requests through.
-        api_key: API key for Bearer token auth (used when auth_mode="api_key").
+        api_key: API key for auth (used when auth_mode="api_key").
+            YAML key: ``api_key`` (MCP), ``gateway_api_key`` (LLM).
+        api_key_header: Header name used to send the API key (default: "api-key").
+            YAML key: ``api_key_header`` (MCP), ``gateway_api_key_header`` (LLM).
         auth_mode: Authentication mode - one of:
             "none" - no authentication (default for MCP gateways)
-            "api_key" - API key sent in ``api-key`` header (default for LLM gateways)
+            "api_key" - API key sent in configurable header (default for LLM gateways)
             "aws_sigv4" - AWS Signature V4 signing
             "google_adc" - Google Application Default Credentials
             "oauth2_client_credentials" - OAuth 2.0 Client Credentials grant
+            "client" - forward the client's own auth headers to the gateway as-is
         fail_open: If True, allow the original request on gateway failure.
         timeout: Timeout in seconds for gateway calls.
         retry_total: Total number of retries on failure.
@@ -44,7 +48,8 @@ class GatewaySettings:
 
     url: str
     api_key: Optional[str] = None
-    auth_mode: str = "api_key"  # "none" | "api_key" | "aws_sigv4" | "google_adc" | "oauth2_client_credentials"
+    api_key_header: str = "api-key"
+    auth_mode: str = "api_key"  # "none" | "api_key" | "aws_sigv4" | "google_adc" | "oauth2_client_credentials" | "client"
     fail_open: bool = True
     timeout: int = 60
     retry_total: int = 3

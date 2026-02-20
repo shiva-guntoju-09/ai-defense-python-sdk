@@ -255,12 +255,18 @@ def _wrap_streamablehttp_client(wrapped, instance, args, kwargs):
         args = (gw_settings.url,) + args[1:]
 
     # Inject auth headers based on auth_mode
-    if gw_settings.auth_mode == "api_key" and gw_settings.api_key:
+    if gw_settings.auth_mode == "client":
+        # Forward whatever auth headers the client already set (no gateway auth injected).
+        # The gateway proxies the client's credentials to the actual MCP server.
+        logger.debug("[MCP GATEWAY] auth_mode=client — forwarding client-provided headers")
+
+    elif gw_settings.auth_mode == "api_key" and gw_settings.api_key:
         headers = kwargs.get('headers', {})
         if headers is None:
             headers = {}
         headers = dict(headers)
-        headers['api-key'] = gw_settings.api_key
+        header_name = gw_settings.api_key_header or "api-key"
+        headers[header_name] = gw_settings.api_key
         kwargs['headers'] = headers
 
     elif gw_settings.auth_mode == "oauth2_client_credentials":
