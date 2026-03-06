@@ -485,7 +485,7 @@ agentsec.protect(
 **Notes:**
 
 - `protect()` is **idempotent** -- calling it multiple times has no effect after the first successful call.
-- Call `protect()` **before** importing LLM client libraries so that patches are applied at import time.
+- It is recommended to call `protect()` early in your application, ideally before creating LLM clients. However, `wrapt`-based patching works at the class level, so import order is not strictly required for standard usage.
 
 ---
 

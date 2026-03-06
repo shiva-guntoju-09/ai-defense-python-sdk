@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .gateway_settings import GatewaySettings
 
@@ -115,6 +115,9 @@ _api_mcp_retry_total: int = 2
 _api_mcp_retry_backoff: float = 0.5
 _api_mcp_retry_status_codes: List[int] = [429, 500, 502, 503, 504]
 
+# Monitor-mode violation callback
+_on_violation: Optional[Callable] = None
+
 
 # ===========================================================================
 # Getters — preserved
@@ -123,6 +126,17 @@ _api_mcp_retry_status_codes: List[int] = [429, 500, 502, 503, 504]
 def is_initialized() -> bool:
     """Check if agentsec has been initialized."""
     return _initialized
+
+
+def get_on_violation() -> Optional[Callable]:
+    """Get the on_violation callback for monitor-mode block decisions."""
+    return _on_violation
+
+
+def set_on_violation(callback: Optional[Callable]) -> None:
+    """Set the on_violation callback for monitor-mode block decisions."""
+    global _on_violation
+    _on_violation = callback
 
 
 def get_llm_rules() -> Optional[List[Any]]:
@@ -929,6 +943,7 @@ def reset() -> None:
     global _api_llm_retry_total, _api_llm_retry_backoff, _api_llm_retry_status_codes
     global _api_mcp_fail_open, _api_mcp_timeout
     global _api_mcp_retry_total, _api_mcp_retry_backoff, _api_mcp_retry_status_codes
+    global _on_violation
 
     with _state_lock:
         _initialized = False
@@ -983,6 +998,8 @@ def reset() -> None:
         _api_mcp_retry_total = 2
         _api_mcp_retry_backoff = 0.5
         _api_mcp_retry_status_codes = [429, 500, 502, 503, 504]
+
+        _on_violation = None
 
     # Clear cached inspector singletons so re-protect() creates fresh ones
     from .patchers import reset_all_patcher_inspectors

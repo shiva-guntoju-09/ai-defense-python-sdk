@@ -157,8 +157,22 @@ def _should_inspect() -> bool:
 
 
 def _enforce_decision(decision: Decision) -> None:
-    if _state.get_llm_mode() == "enforce" and decision.action == "block":
-        raise SecurityPolicyError(decision)
+    """Enforce or log a decision based on the current mode."""
+    mode = _state.get_llm_mode()
+    if decision.action == "block":
+        if mode == "enforce":
+            raise SecurityPolicyError(decision)
+        elif mode == "monitor":
+            logger.warning(
+                "[agentsec] Block decision in monitor mode: reasons=%s, severity=%s, classifications=%s",
+                decision.reasons, decision.severity, decision.classifications,
+            )
+            callback = _state.get_on_violation()
+            if callback is not None:
+                try:
+                    callback(decision)
+                except Exception:
+                    logger.debug("on_violation callback raised an exception", exc_info=True)
 
 
 def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision]:

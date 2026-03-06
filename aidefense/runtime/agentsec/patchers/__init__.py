@@ -25,11 +25,18 @@ def mark_patched(name: str) -> None:
 
 
 def get_patched_clients() -> List[str]:
-    """
-    Get list of successfully patched clients (thread-safe).
-    
+    """Return the names of client modules that agentsec has patched.
+
+    Each entry is an internal identifier such as ``"openai"``,
+    ``"bedrock"``, or ``"mcp"`` — these correspond to the patcher
+    modules, **not** the names you would use in ``import`` statements.
+
+    Call this after ``protect()`` to verify which integrations are
+    active.  An empty list means no clients were patched (e.g. all
+    modes are off or ``patch_clients=False`` was passed).
+
     Returns:
-        List of client names that have been patched
+        List of patcher-module names that have been applied.
     """
     with _registry_lock:
         return [name for name, patched in _patch_registry.items() if patched]

@@ -1170,7 +1170,7 @@ cd /path/to/ai-defense-python-sdk
 | `SecurityPolicyError` raised | Expected in enforce mode when content violates policies |
 | `SecurityPolicyError: Gateway mode is active but no gateway configuration found` | Gateway mode is enabled but no gateway is configured for the provider/URL. Add a gateway entry in `agentsec.yaml` or switch to `api` mode. |
 | `[BLOCKED] Prompt Injection` | AI Defense detected prompt injection - this is working correctly |
-| No inspection happening | Ensure `agentsec.protect()` is called BEFORE importing LLM clients |
+| No inspection happening | Ensure `agentsec.protect()` is called early in your application. Check that the mode is set (e.g. `api_mode.llm.mode: monitor`) and credentials are configured. |
 | MCP tool calls not inspected | Ensure `mcp` package is installed and `api_mode.mcp.mode` is set in `agentsec.yaml` |
 | Poetry version error | Remove `package-mode = false` from pyproject.toml if using older Poetry |
 | Vertex AI gateway 400 `Invalid JSON payload` | Known AI Defense gateway limitation: request bodies larger than ~2700 bytes are corrupted during forwarding. Use `llm_integration_mode: api` for Vertex AI / google-genai until the gateway team resolves this. |

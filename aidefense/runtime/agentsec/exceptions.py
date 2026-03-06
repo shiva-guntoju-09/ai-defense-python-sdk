@@ -152,10 +152,25 @@ class SecurityPolicyError(AgentsecError):
     
     def _format_message(self, decision: "Decision") -> str:
         """Format a human-readable message from the decision."""
+        parts = ["Security policy violation"]
+
         if decision.reasons:
-            reasons_str = "; ".join(decision.reasons)
-            return f"Security policy violation: {reasons_str}"
-        return "Security policy violation: request blocked"
+            parts.append(": " + "; ".join(decision.reasons))
+
+        details = []
+        if decision.severity:
+            details.append(f"severity={decision.severity}")
+        if decision.classifications:
+            details.append(f"classifications={decision.classifications}")
+        if decision.explanation:
+            details.append(f"explanation={decision.explanation!r}")
+
+        if details:
+            parts.append(f" [{', '.join(details)}]")
+        elif not decision.reasons:
+            parts.append(": request blocked")
+
+        return "".join(parts)
     
     def __str__(self) -> str:
         return self.message

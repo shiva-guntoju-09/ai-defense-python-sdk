@@ -5,31 +5,22 @@ Provides runtime security enforcement and monitoring for LLM and MCP
 interactions with minimal integration effort.
 
 Usage (Simple - with YAML config):
-    import agentsec
+    from aidefense.runtime import agentsec
     agentsec.protect(config="agentsec.yaml")
 
-    # Now import your LLM client
-    from openai import OpenAI
+    from openai import OpenAI   # order doesn't matter; wrapt patches at class level
+    client = OpenAI()
 
 Usage (Programmatic):
-    import agentsec
+    from aidefense.runtime import agentsec
     agentsec.protect(
-        llm_integration_mode="gateway",
-        gateway_mode={
-            "llm_gateways": {
-                "openai-1": {
-                    "gateway_url": "https://gw.aidefense.cisco.com/t1/conn/openai",
-                    "gateway_api_key": "your-key",
-                    "auth_mode": "api_key",
-                    "provider": "openai",
-                    "default": True,
-                },
-            },
+        api_mode={
+            "llm": {"mode": "monitor", "endpoint": "...", "api_key": "..."},
         },
     )
 
 Usage (Named gateways):
-    import agentsec
+    from aidefense.runtime import agentsec
     agentsec.protect(config="agentsec.yaml")
 
     with agentsec.gateway("math-gateway"):
@@ -41,8 +32,10 @@ https://developer.cisco.com/docs/ai-defense/overview/
 
 import copy
 import logging
+import os
+import sys
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import _state
 from .decision import Decision
@@ -61,6 +54,8 @@ from ._context import (
     set_metadata,
     gateway,
     use_gateway,
+    get_inspection_context,
+    InspectionContext,
 )
 
 # Lock for thread-safe initialization of protect()
@@ -70,6 +65,8 @@ __all__ = [
     "protect",
     "get_patched_clients",
     "set_metadata",
+    "get_inspection_context",
+    "InspectionContext",
     "Decision",
     # Exceptions
     "AgentsecError",
@@ -315,12 +312,14 @@ def _validate_gateway_entries(
 def protect(
     patch_clients: bool = True,
     *,
+    enabled: Optional[bool] = None,
     auto_dotenv: bool = True,
     config: Optional[str] = None,
     llm_integration_mode: Optional[str] = None,
     mcp_integration_mode: Optional[str] = None,
     gateway_mode: Optional[dict] = None,
     api_mode: Optional[dict] = None,
+    on_violation: Optional[Callable[["Decision"], None]] = None,
     pool_max_connections: Optional[int] = None,
     pool_max_keepalive: Optional[int] = None,
     custom_logger: Optional[logging.Logger] = None,
@@ -329,8 +328,10 @@ def protect(
 ) -> None:
     """Enable agentsec protection for LLM and MCP interactions.
 
-    This is the main entry point for agentsec. Call this once at the top
-    of your application, BEFORE importing any LLM clients.
+    This is the main entry point for agentsec. It is recommended to call
+    this at the top of your application before creating LLM clients,
+    though ``wrapt``-based patching works regardless of import order for
+    standard usage patterns.
 
     Minimal usage (no config)::
 
@@ -346,25 +347,33 @@ def protect(
 
         import agentsec
         agentsec.protect(
-            llm_integration_mode="gateway",
-            gateway_mode={
-                "llm_gateways": {
-                    "openai-1": {
-                        "gateway_url": "https://...",
-                        "gateway_api_key": "key",
-                        "auth_mode": "api_key",
-                        "provider": "openai",
-                        "default": True,
-                    },
-                },
+            api_mode={
+                "llm": {"mode": "monitor", "endpoint": "...", "api_key": "..."},
             },
         )
+
+    Monitor-mode callback::
+
+        agentsec.protect(
+            api_mode={"llm": {"mode": "monitor", ...}},
+            on_violation=lambda decision: print(f"Flagged: {decision}"),
+        )
+
+    Disable agentsec (env var or parameter)::
+
+        # Via env var:  AGENTSEC_DISABLED=true python app.py
+        # Via parameter:
+        agentsec.protect(enabled=False)
 
     This function is idempotent — calling it multiple times has no
     effect after the first successful call.
 
     Args:
         patch_clients: Whether to auto-patch LLM clients.
+        enabled: Explicitly enable/disable agentsec. When ``False``,
+            ``protect()`` returns immediately without patching.
+            Also honours the ``AGENTSEC_DISABLED`` env var (``true``/``1``)
+            and the ``enabled`` key in YAML config.
         auto_dotenv: Load .env before YAML parsing so ``${VAR}``
             references can resolve.
         config: Path to an ``agentsec.yaml`` configuration file.
@@ -374,6 +383,8 @@ def protect(
             (llm_defaults, mcp_defaults, llm_gateways, mcp_gateways).
         api_mode: Dict matching the ``api_mode`` section in YAML
             (llm_defaults, mcp_defaults, llm, mcp).
+        on_violation: Optional callback invoked when a block decision
+            is issued in monitor mode. Receives the ``Decision`` object.
         pool_max_connections: Max HTTP connections (global).
         pool_max_keepalive: Max keepalive connections (global).
         custom_logger: Custom ``logging.Logger`` instance.
@@ -386,6 +397,16 @@ def protect(
             wrong root type, or invalid values.
         ValueError: If log_format is not a supported value.
     """
+    # Check AGENTSEC_DISABLED env var
+    if enabled is None:
+        env_disabled = os.environ.get("AGENTSEC_DISABLED", "").lower()
+        if env_disabled in ("true", "1", "yes"):
+            logger.info("agentsec disabled via AGENTSEC_DISABLED env var")
+            return
+
+    if enabled is False:
+        logger.info("agentsec disabled via enabled=False parameter")
+        return
     # Validate inputs eagerly — these checks run even if protect() was
     # already called, so misconfigurations are never silently accepted.
     _validate_protect_args(config=config, log_format=log_format)
@@ -409,6 +430,7 @@ def protect(
             mcp_integration_mode=mcp_integration_mode,
             gateway_mode=gateway_mode,
             api_mode=api_mode,
+            on_violation=on_violation,
             pool_max_connections=pool_max_connections,
             pool_max_keepalive=pool_max_keepalive,
             custom_logger=custom_logger,
@@ -425,6 +447,7 @@ def _protect_impl(
     mcp_integration_mode: Optional[str],
     gateway_mode: Optional[dict],
     api_mode: Optional[dict],
+    on_violation: Optional[Callable[["Decision"], None]],
     pool_max_connections: Optional[int],
     pool_max_keepalive: Optional[int],
     custom_logger: Optional[logging.Logger],
@@ -459,6 +482,11 @@ def _protect_impl(
     if kwargs_overlay:
         merged = _deep_merge(merged, kwargs_overlay)
 
+    # Step 2b: Check YAML-level 'enabled' key
+    if merged.get("enabled") is False:
+        logger.info("agentsec disabled via 'enabled: false' in config")
+        return
+
     # Step 3: Extract final values
     final_llm_integration = merged.get("llm_integration_mode", "api")
     final_mcp_integration = merged.get("mcp_integration_mode", "api")
@@ -486,6 +514,22 @@ def _protect_impl(
     api_mcp_cfg = _raw_mcp or {}
     api_mode_llm_str = api_llm_cfg.get("mode")
     api_mode_mcp_str = api_mcp_cfg.get("mode")
+
+    # Validate known keys in api_mode.llm / api_mode.mcp to catch typos
+    _KNOWN_API_MODE_KEYS = {
+        "mode", "endpoint", "api_key", "fail_open",
+        "rules", "entity_types", "timeout_ms",
+        "retry_total", "retry_backoff", "retry_status_codes",
+        "pool_max_connections", "pool_max_keepalive",
+    }
+    for section_name, section_cfg in [("api_mode.llm", api_llm_cfg), ("api_mode.mcp", api_mcp_cfg)]:
+        unknown = set(section_cfg.keys()) - _KNOWN_API_MODE_KEYS
+        if unknown:
+            import difflib
+            for key in sorted(unknown):
+                close = difflib.get_close_matches(key, _KNOWN_API_MODE_KEYS, n=1, cutoff=0.6)
+                hint = f" Did you mean '{close[0]}'?" if close else ""
+                logger.warning(f"Unknown key '{key}' in {section_name}.{hint}")
 
     # Extract logging config from YAML
     logging_cfg = merged.get("logging") or {}
@@ -540,6 +584,21 @@ def _protect_impl(
         final_mcp_integration,
         final_gateway_mode,
     )
+
+    # Step 5c: Store on_violation callback in state
+    if on_violation is not None:
+        _state.set_on_violation(on_violation)
+
+    # Step 5d: Log info if LLM clients were already imported
+    _already_imported = [
+        name for name in ("openai", "anthropic", "cohere", "mistralai", "google.generativeai", "boto3")
+        if name in sys.modules
+    ]
+    if _already_imported:
+        logger.info(
+            f"LLM client libraries already imported: {_already_imported}. "
+            f"This is fine — wrapt patches at the class level."
+        )
 
     # Step 6: Store state BEFORE patching
     _state.set_state(
