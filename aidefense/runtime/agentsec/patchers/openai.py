@@ -236,15 +236,60 @@ def _normalize_messages(messages: Any) -> List[Dict[str, Any]]:
     return result
 
 
+def _content_to_text(content: Any) -> str:
+    """Flatten OpenAI-style content payloads into plain text for inspection."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if text:
+                    parts.append(str(text))
+            elif hasattr(block, "text"):
+                text = getattr(block, "text", None)
+                if text:
+                    parts.append(str(text))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _resolve_response_for_inspection(response: Any) -> Any:
+    """Parse raw OpenAI wrappers so response inspection can read assistant text."""
+    try:
+        if not hasattr(response, "choices") and hasattr(response, "parse"):
+            parsed = response.parse()
+            if parsed is not None:
+                return parsed
+    except Exception as e:
+        logger.debug(f"Error parsing raw OpenAI response for inspection: {e}")
+    return response
+
+
 def _extract_assistant_content(response: Any) -> str:
     """Extract assistant content from OpenAI response."""
     try:
+        response = _resolve_response_for_inspection(response)
+        if isinstance(response, dict):
+            choices = response.get("choices") or []
+            if choices:
+                choice = choices[0]
+                if isinstance(choice, dict):
+                    if "message" in choice and isinstance(choice["message"], dict):
+                        return _content_to_text(choice["message"].get("content"))
+                    if "text" in choice:
+                        return _content_to_text(choice.get("text"))
         if hasattr(response, "choices") and response.choices:
             choice = response.choices[0]
             if hasattr(choice, "message"):
-                return choice.message.content or ""
+                return _content_to_text(getattr(choice.message, "content", ""))
             elif hasattr(choice, "text"):
-                return choice.text or ""
+                return _content_to_text(getattr(choice, "text", ""))
     except Exception as e:
         logger.debug(f"Error extracting assistant content: {e}")
     return ""
