@@ -15,7 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import abstractmethod, ABC
-from typing import Dict, Any
+from typing import Dict, Any, List
 from dataclasses import asdict
 
 from .auth import RuntimeAuth, AsyncAuth
@@ -186,26 +186,20 @@ class BaseInspectionClient(ABC):
             except ValueError:
                 # Log invalid classification but don't add it
                 self.config.logger.warning(f"Invalid classification type: {cls}")
-
-        # Helper function to parse a list of rules
-        def parse_rules(rules_data):
-            parsed_rules = []
-            for rule_data in rules_data:
-                # Try to convert to enum, keep original string if not in enum
+        def _parse_rule_list(rule_list: list) -> List[Rule]:
+            out = []
+            for rule_data in rule_list:
                 rule_name = rule_data.get("rule_name")
                 try:
-                    rule_name = RuleName(rule_data["rule_name"])
+                    rule_name = RuleName(rule_data["rule_name"]) if rule_name is not None else None
                 except (ValueError, KeyError):
-                    # Keep the original string for custom rule names
                     pass
-                # Try to convert to enum, keep original string if not in enum
                 classification = rule_data.get("classification")
                 try:
-                    classification = Classification(rule_data["classification"])
+                    classification = Classification(rule_data["classification"]) if classification is not None else None
                 except (ValueError, KeyError):
-                    # Keep the original string for custom classifications
                     pass
-                parsed_rules.append(
+                out.append(
                     Rule(
                         rule_name=rule_name,
                         entity_types=rule_data.get("entity_types"),
@@ -213,13 +207,13 @@ class BaseInspectionClient(ABC):
                         classification=classification,
                     )
                 )
-            return parsed_rules
+            return out
 
         # Parse rules if present
-        rules = parse_rules(response_data.get("rules", []))
-
-        # Parse processed_rules if present
-        processed_rules = parse_rules(response_data.get("processed_rules", []))
+        rules = _parse_rule_list(response_data.get("rules", []))
+        # Parse processed_rules if present (API may send processed_rules or processedRules)
+        processed_rules_data = response_data.get("processed_rules") or response_data.get("processedRules")
+        processed_rules = _parse_rule_list(processed_rules_data) if isinstance(processed_rules_data, list) else []
 
         # Parse severity if present
         severity = None
@@ -240,12 +234,12 @@ class BaseInspectionClient(ABC):
             is_safe=response_data.get("is_safe", True),
             severity=severity,
             rules=rules or None,
+            processed_rules=processed_rules or None,
             attack_technique=response_data.get("attack_technique"),
             explanation=response_data.get("explanation"),
             client_transaction_id=response_data.get("client_transaction_id"),
             event_id=response_data.get("event_id"),
             action=action,
-            processed_rules=processed_rules or None,
         )
 
     def _prepare_inspection_metadata(self, metadata: Metadata) -> Dict:

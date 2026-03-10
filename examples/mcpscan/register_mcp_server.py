@@ -66,8 +66,8 @@ def main():
         auth_server_url="https://feverous-roderick-vertically.ngrok-free.dev/oauth/token",
     )
 
-    # When the API requires it, pass repository_url (absolute URL to the server's source repo).
-    # Omit repository_url if not required by your environment.
+    # repository_url: optional absolute URI of the source repo (e.g. GitHub). Pass when the API
+    # requires it to avoid validation errors; omit or set to None otherwise.
     register_request = RegisterMCPServerRequest(
         name="Demo oauth",
         url="https://feverous-roderick-vertically.ngrok-free.dev/mcp/oauth",

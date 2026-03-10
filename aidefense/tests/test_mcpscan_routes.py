@@ -1,4 +1,4 @@
-# Copyright 2025 Cisco Systems, Inc. and its affiliates
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,7 +31,6 @@ from aidefense.mcpscan.routes import (
     # Resource Connection routes
     resource_connections,
     resource_connection_by_id,
-    resource_connection_by_resource_id,
     resource_connections_filter,
     resources_by_connection_id,
     add_or_update_resource_connections,
@@ -100,11 +99,6 @@ class TestResourceConnectionRoutes:
         """Test the resource connection by ID route."""
         connection_id = "conn-123"
         assert resource_connection_by_id(connection_id) == f"resource/connections/{connection_id}"
-
-    def test_resource_connection_by_resource_id(self):
-        """Test the resource connection by resource ID route."""
-        resource_id = "res-789"
-        assert resource_connection_by_resource_id(resource_id) == f"resource/{resource_id}/connection"
 
     def test_resource_connections_filter(self):
         """Test the resource connections filter route."""

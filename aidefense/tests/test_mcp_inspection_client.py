@@ -1,4 +1,4 @@
-# Copyright 2025 Cisco Systems, Inc. and its affiliates
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,9 +35,9 @@ TEST_API_KEY = "0123456789" * 6 + "0123"  # 64 characters
 @pytest.fixture(autouse=True)
 def reset_config_singleton():
     """Reset Config singleton before each test."""
-    Config._instances = {}
+    Config._instance = None
     yield
-    Config._instances = {}
+    Config._instance = None
 
 
 @pytest.fixture
@@ -142,6 +142,70 @@ class TestMCPInspectionClient:
         assert isinstance(result, MCPInspectResponse)
         assert result.result is not None
         assert result.result.is_safe is False
+
+    def test_inspect_prompt_get(self, mcp_client, mock_request_handler):
+        """Test inspecting an MCP prompt get request."""
+        mock_request_handler.request.return_value = {
+            "jsonrpc": "2.0",
+            "result": {
+                "is_safe": True,
+                "classifications": [],
+                "action": "ALLOW",
+            },
+            "id": "prompt-1",
+        }
+
+        result = mcp_client.inspect_prompt_get(
+            prompt_name="summarize_report",
+            arguments={"format": "bullets"},
+            message_id="prompt-1",
+        )
+
+        mock_request_handler.request.assert_called_once()
+        assert isinstance(result, MCPInspectResponse)
+        assert result.result is not None
+        assert result.result.is_safe is True
+        assert result.id == "prompt-1"
+
+    def test_inspect_prompt_get_defaults_arguments_to_empty_dict(self, mcp_client, mock_request_handler):
+        """Test inspect_prompt_get sends empty arguments when not provided."""
+        mock_request_handler.request.return_value = {
+            "jsonrpc": "2.0",
+            "result": {"is_safe": True, "classifications": [], "action": "ALLOW"},
+            "id": "prompt-empty-args",
+        }
+
+        result = mcp_client.inspect_prompt_get(
+            prompt_name="summarize_report",
+            message_id="prompt-empty-args",
+        )
+
+        mock_request_handler.request.assert_called_once()
+        sent_json = mock_request_handler.request.call_args.kwargs["json_data"]
+        assert sent_json["method"] == "prompts/get"
+        assert sent_json["params"] == {"name": "summarize_report", "arguments": {}}
+        assert result.id == "prompt-empty-args"
+
+    def test_inspect_prompt_get_forwards_request_id_and_timeout(self, mcp_client, mock_request_handler):
+        """Test inspect_prompt_get forwards request context to request handler."""
+        mock_request_handler.request.return_value = {
+            "jsonrpc": "2.0",
+            "result": {"is_safe": True, "classifications": [], "action": "ALLOW"},
+            "id": "prompt-with-context",
+        }
+
+        mcp_client.inspect_prompt_get(
+            prompt_name="summarize_report",
+            arguments={"style": "concise"},
+            message_id="prompt-with-context",
+            request_id="req-123",
+            timeout=15,
+        )
+
+        mock_request_handler.request.assert_called_once()
+        kwargs = mock_request_handler.request.call_args.kwargs
+        assert kwargs["request_id"] == "req-123"
+        assert kwargs["timeout"] == 15
 
     def test_inspect_raw_message(self, mcp_client, mock_request_handler):
         """Test inspecting a raw MCPMessage."""
@@ -301,15 +365,39 @@ class TestMCPMessageValidation:
         mcp_client.validate_mcp_message(request_dict)
 
     def test_validate_valid_response(self, mcp_client):
-        """Test validation passes for valid response message."""
+        """Test validation passes for valid response message (method and params required)."""
         request_dict = {
             "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": "get_info", "arguments": {}},
             "result": {"content": []},
             "id": 1,
         }
 
         # Should not raise
         mcp_client.validate_mcp_message(request_dict)
+
+    def test_validate_response_requires_method(self, mcp_client):
+        """Test response body without method raises ValidationError."""
+        request_dict = {
+            "jsonrpc": "2.0",
+            "params": {},
+            "result": {"content": []},
+            "id": 1,
+        }
+        with pytest.raises(ValidationError, match="method"):
+            mcp_client.validate_mcp_message(request_dict)
+
+    def test_validate_response_requires_params(self, mcp_client):
+        """Test response body without params raises ValidationError."""
+        request_dict = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "result": {"content": []},
+            "id": 1,
+        }
+        with pytest.raises(ValidationError, match="params"):
+            mcp_client.validate_mcp_message(request_dict)
 
     def test_validate_valid_error_response(self, mcp_client):
         """Test validation passes for valid error response."""
@@ -430,3 +518,33 @@ class TestMCPClientInput:
         )
 
         assert result.result.is_safe is True
+
+    def test_inspect_response_requires_method(self, mcp_client):
+        """Test inspect_response raises ValidationError when method is missing or empty."""
+        with pytest.raises(ValidationError, match="method"):
+            mcp_client.inspect_response(
+                result_data={"content": []},
+                method="",
+                params={},
+            )
+        with pytest.raises(ValidationError, match="method"):
+            mcp_client.inspect_response(
+                result_data={"content": []},
+                method=None,
+                params={},
+            )
+
+    def test_inspect_response_requires_params(self, mcp_client):
+        """Test inspect_response raises ValidationError when params is missing or not a dict."""
+        with pytest.raises(ValidationError, match="params"):
+            mcp_client.inspect_response(
+                result_data={"content": []},
+                method="tools/call",
+                params=None,
+            )
+        with pytest.raises(ValidationError, match="params"):
+            mcp_client.inspect_response(
+                result_data={"content": []},
+                method="tools/call",
+                params="not-a-dict",
+            )
