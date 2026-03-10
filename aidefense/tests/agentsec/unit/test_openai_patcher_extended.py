@@ -1,9 +1,10 @@
 """Extended tests for the OpenAI patcher.
 
 Covers _detect_provider, _get_azure_api_version, _get_azure_deployment_name,
-_normalize_messages, _extract_assistant_content, _should_inspect, _enforce_decision,
-_handle_patcher_error, _handle_gateway_call_sync, _FakeStreamWrapper,
-_dict_to_openai_response, _create_stream_chunk_from_response,
+_normalize_messages, _extract_assistant_content, _content_to_text,
+_resolve_response_for_inspection, _normalize_kwargs_for_strict_openai_compat,
+_should_inspect, _enforce_decision, _handle_patcher_error, _handle_gateway_call_sync,
+_FakeStreamWrapper, _dict_to_openai_response, _create_stream_chunk_from_response,
 _wrap_chat_completions_create, _wrap_responses_create, StreamingInspectionWrapper,
 _get_inspector, and patch_openai.
 """
@@ -18,7 +19,10 @@ from aidefense.runtime.agentsec.patchers.openai import (
     _get_azure_api_version,
     _get_azure_deployment_name,
     _normalize_messages,
+    _content_to_text,
+    _resolve_response_for_inspection,
     _extract_assistant_content,
+    _normalize_kwargs_for_strict_openai_compat,
     _should_inspect,
     _enforce_decision,
     _handle_patcher_error,
@@ -129,6 +133,49 @@ class TestGetAzureDeploymentName:
 
 
 # ===========================================================================
+# _normalize_kwargs_for_strict_openai_compat()
+# ===========================================================================
+
+class TestNormalizeKwargsForStrictOpenAICompat:
+    def test_mistral_rewrites_max_completion_tokens(self):
+        client = SimpleNamespace(base_url="https://api.mistral.ai/v1")
+        instance = SimpleNamespace(_client=client)
+        kwargs = {"model": "mistral-large", "max_completion_tokens": 100}
+        result = _normalize_kwargs_for_strict_openai_compat(instance, kwargs)
+        assert result.get("max_tokens") == 100
+        assert "max_completion_tokens" not in result
+
+    def test_mistral_drops_penalty_params(self):
+        client = SimpleNamespace(base_url="https://api.mistral.ai/")
+        instance = SimpleNamespace(_client=client)
+        kwargs = {"model": "mistral", "presence_penalty": 0.5, "frequency_penalty": 0.2}
+        result = _normalize_kwargs_for_strict_openai_compat(instance, kwargs)
+        assert "presence_penalty" not in result
+        assert "frequency_penalty" not in result
+
+    def test_non_mistral_passes_through(self):
+        client = SimpleNamespace(base_url="https://api.openai.com/v1")
+        instance = SimpleNamespace(_client=client)
+        kwargs = {"model": "gpt-4", "max_completion_tokens": 50, "presence_penalty": 0.1}
+        result = _normalize_kwargs_for_strict_openai_compat(instance, kwargs)
+        assert result == kwargs
+
+    def test_no_client_returns_kwargs(self):
+        instance = SimpleNamespace()
+        kwargs = {"model": "test", "max_completion_tokens": 100}
+        result = _normalize_kwargs_for_strict_openai_compat(instance, kwargs)
+        assert result == kwargs
+
+    def test_mistral_both_max_tokens_replaced(self):
+        client = SimpleNamespace(base_url="https://api.MISTRAL.ai/v1")
+        instance = SimpleNamespace(_client=client)
+        kwargs = {"max_tokens": 50, "max_completion_tokens": 100}
+        result = _normalize_kwargs_for_strict_openai_compat(instance, kwargs)
+        assert result["max_tokens"] == 100
+        assert "max_completion_tokens" not in result
+
+
+# ===========================================================================
 # _normalize_messages()
 # ===========================================================================
 
@@ -173,6 +220,58 @@ class TestNormalizeMessages:
 # _extract_assistant_content()
 # ===========================================================================
 
+class TestContentToText:
+    """Tests for _content_to_text (block-based content flattening)."""
+
+    def test_none_returns_empty(self):
+        assert _content_to_text(None) == ""
+
+    def test_string_passthrough(self):
+        assert _content_to_text("hello") == "hello"
+
+    def test_block_with_text_key(self):
+        content = [{"type": "text", "text": "Hello"}]
+        assert _content_to_text(content) == "Hello"
+
+    def test_block_with_content_key(self):
+        content = [{"type": "text", "content": "Hi from content"}]
+        assert _content_to_text(content) == "Hi from content"
+
+    def test_block_text_precedence_over_content(self):
+        content = [{"text": "a", "content": "b"}]
+        assert _content_to_text(content) == "a"
+
+    def test_multiple_blocks(self):
+        content = [{"text": "line1"}, {"text": "line2"}, {"content": "line3"}]
+        assert _content_to_text(content) == "line1\nline2\nline3"
+
+    def test_object_with_text_attr(self):
+        block = SimpleNamespace(text="via attr")
+        assert _content_to_text([block]) == "via attr"
+
+    def test_string_in_list(self):
+        assert _content_to_text(["plain"]) == "plain"
+
+
+class TestResolveResponseForInspection:
+    """Tests for _resolve_response_for_inspection (raw wrapper parsing)."""
+
+    def test_has_choices_returns_unchanged(self):
+        response = SimpleNamespace(choices=[1], parse=lambda: None)
+        assert _resolve_response_for_inspection(response) is response
+
+    def test_no_choices_calls_parse(self):
+        parsed = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))])
+        raw = SimpleNamespace(parse=lambda: parsed)
+        result = _resolve_response_for_inspection(raw)
+        assert result is parsed
+        assert result.choices[0].message.content == "OK"
+
+    def test_parse_returns_none_keeps_response(self):
+        raw = SimpleNamespace(parse=lambda: None)
+        assert _resolve_response_for_inspection(raw) is raw
+
+
 class TestExtractAssistantContent:
     def test_from_message_content(self):
         response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="Hi"))])
@@ -180,7 +279,6 @@ class TestExtractAssistantContent:
 
     def test_from_text_attr(self):
         choice = SimpleNamespace(text="via text")
-        # Remove message attr
         response = SimpleNamespace(choices=[choice])
         assert _extract_assistant_content(response) == "via text"
 
@@ -189,6 +287,33 @@ class TestExtractAssistantContent:
 
     def test_empty_on_exception(self):
         assert _extract_assistant_content(object()) == ""
+
+    def test_dict_response_with_message_content(self):
+        response = {"choices": [{"message": {"content": "from dict"}}]}
+        assert _extract_assistant_content(response) == "from dict"
+
+    def test_dict_response_with_text(self):
+        response = {"choices": [{"text": "dict text"}]}
+        assert _extract_assistant_content(response) == "dict text"
+
+    def test_raw_wrapper_with_parse(self):
+        parsed = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="parsed"))])
+        raw = SimpleNamespace(parse=lambda: parsed)
+        assert _extract_assistant_content(raw) == "parsed"
+
+    def test_block_based_content_in_message(self):
+        content = [{"type": "text", "text": "block text"}]
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+        assert _extract_assistant_content(response) == "block text"
+
+    def test_block_based_content_key(self):
+        content = [{"type": "text", "content": "from content key"}]
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        )
+        assert _extract_assistant_content(response) == "from content key"
 
 
 # ===========================================================================

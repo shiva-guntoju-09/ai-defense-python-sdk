@@ -246,7 +246,7 @@ def _content_to_text(content: Any) -> str:
         parts = []
         for block in content:
             if isinstance(block, dict):
-                text = block.get("text")
+                text = block.get("text") or block.get("content")
                 if text:
                     parts.append(str(text))
             elif hasattr(block, "text"):
@@ -535,7 +535,14 @@ def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision
 
 
 def _normalize_kwargs_for_strict_openai_compat(instance: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize parameters for stricter OpenAI-compatible APIs like Mistral."""
+    """Normalize parameters for stricter OpenAI-compatible APIs like Mistral.
+
+    Mistral's OpenAI-compatible API rejects some fields that LangChain sends
+    (e.g. max_completion_tokens, presence_penalty, frequency_penalty), causing 422 errors.
+
+    Provider detection: Checks if client's base_url contains "mistral" (case-insensitive).
+    Only applies normalization when targeting Mistral; other providers receive kwargs unchanged.
+    """
     client = getattr(instance, "_client", None)
     if client is None:
         return kwargs
@@ -545,6 +552,8 @@ def _normalize_kwargs_for_strict_openai_compat(instance: Any, kwargs: Dict[str, 
         return kwargs
 
     normalized = dict(kwargs)
+    # If both max_tokens and max_completion_tokens exist, prefer the completion value
+    # since LangChain often sends max_completion_tokens for strict APIs.
     if "max_completion_tokens" in normalized:
         normalized["max_tokens"] = normalized.pop("max_completion_tokens")
     normalized.pop("frequency_penalty", None)

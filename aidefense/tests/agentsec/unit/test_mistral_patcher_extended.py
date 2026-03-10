@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from aidefense.runtime.agentsec.patchers.mistral import (
+    _extract_assistant_content,
     _handle_patcher_error,
     _should_inspect,
     _dict_to_mistral_response,
@@ -509,9 +510,7 @@ class TestMistralNormalizeExtended:
 
 class TestMistralExtractExtended:
     def test_extract_text_attribute_on_choice(self):
-        from aidefense.runtime.agentsec.patchers.mistral import _extract_assistant_content
         choice = SimpleNamespace(text="via text attr")
-        # Remove message attribute
         response = SimpleNamespace(choices=[choice])
         assert _extract_assistant_content(response) == "via text attr"
 
