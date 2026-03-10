@@ -489,6 +489,24 @@ def _handle_patcher_error(error: Exception, operation: str) -> Optional[Decision
         raise SecurityPolicyError(decision, f"Inspection failed and fail_open=False: {error}")
 
 
+def _normalize_kwargs_for_strict_openai_compat(instance: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize parameters for stricter OpenAI-compatible APIs like Mistral."""
+    client = getattr(instance, "_client", None)
+    if client is None:
+        return kwargs
+
+    base_url = str(getattr(client, "base_url", "") or "")
+    if "mistral" not in base_url.lower():
+        return kwargs
+
+    normalized = dict(kwargs)
+    if "max_completion_tokens" in normalized:
+        normalized["max_tokens"] = normalized.pop("max_completion_tokens")
+    normalized.pop("frequency_penalty", None)
+    normalized.pop("presence_penalty", None)
+    return normalized
+
+
 def _wrap_chat_completions_create(wrapped, instance, args, kwargs):
     """Wrapper for chat.completions.create.
     
@@ -555,7 +573,8 @@ def _wrap_chat_completions_create(wrapped, instance, args, kwargs):
         if decision:
             set_inspection_context(decision=decision)
     
-    # Call the original
+    # Normalize kwargs for strict OpenAI-compatible providers before calling the client
+    kwargs = _normalize_kwargs_for_strict_openai_compat(instance, kwargs)
     logger.debug(f"[PATCHED CALL] OpenAI.chat.completions.create - calling original method")
     response = wrapped(*args, **kwargs)
     
@@ -873,7 +892,8 @@ async def _wrap_chat_completions_create_async(wrapped, instance, args, kwargs):
         if decision:
             set_inspection_context(decision=decision)
     
-    # Call the original
+    # Normalize kwargs for strict OpenAI-compatible providers before calling the client
+    kwargs = _normalize_kwargs_for_strict_openai_compat(instance, kwargs)
     logger.debug(f"[PATCHED CALL] OpenAI.async - calling original method")
     response = await wrapped(*args, **kwargs)
     
