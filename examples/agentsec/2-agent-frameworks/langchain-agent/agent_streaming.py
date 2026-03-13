@@ -73,7 +73,6 @@ from langchain_core.tools import tool
 from langchain_core.messages import (
     HumanMessage,
     AIMessage,
-    AIMessageChunk,
     ToolMessage,
     SystemMessage,
 )
@@ -132,6 +131,31 @@ def fetch_url(url: str) -> str:
 
 # ── Streaming agent loop ────────────────────────────────────────────────
 
+def _aggregate_stream(llm_with_tools, messages: List):
+    """Stream LLM response and aggregate chunks into a full AIMessage.
+
+    Yields each ``AIMessageChunk`` for real-time display while
+    accumulating the final aggregated message (text + tool_calls).
+
+    Returns:
+        (full_message, printed) — the aggregated AIMessage and whether
+        any content tokens were printed to stdout.
+    """
+    full = None
+    printed = False
+    for chunk in llm_with_tools.stream(messages):
+        full = chunk if full is None else full + chunk
+        token = chunk.content if hasattr(chunk, "content") else ""
+        if token:
+            if not printed:
+                print("\nAgent: ", end="", flush=True)
+                printed = True
+            print(token, end="", flush=True)
+    if printed:
+        print(flush=True)
+    return full, printed
+
+
 def run_streaming_agent_loop(
     llm_with_tools,
     tools_dict: Dict[str, Any],
@@ -140,45 +164,39 @@ def run_streaming_agent_loop(
 ) -> str:
     """Run the agentic loop with **streaming** LLM responses.
 
-    On the final answer (no tool calls) tokens are printed as they arrive.
-    Tool-calling turns use ``invoke()`` because the model must finish
-    deciding which tools to call before we can execute them.
+    Every LLM turn is streamed — text tokens print in real-time.
+    Tool calls are detected from the aggregated stream result so we
+    never need a separate ``invoke()`` call.
     """
     for iteration in range(max_iterations):
         logger.debug(f"Agent iteration {iteration + 1}/{max_iterations}")
 
-        # ── First, try a non-streaming invoke to check for tool calls ───
-        response = llm_with_tools.invoke(messages)
+        full_response, printed = _aggregate_stream(llm_with_tools, messages)
 
-        if response.tool_calls:
-            messages.append(response)
-            for tc in response.tool_calls:
-                tool_name = tc["name"]
-                tool_args = tc["args"]
-                tool_id = tc["id"]
-                logger.debug(f"Tool call: {tool_name}({tool_args})")
-                if tool_name in tools_dict:
-                    try:
-                        result = tools_dict[tool_name].invoke(tool_args)
-                    except Exception as e:
-                        result = f"Error executing tool: {e}"
-                else:
-                    result = f"Unknown tool: {tool_name}"
-                messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
-            continue
+        if full_response is None:
+            return ""
 
-        # ── No tool calls → stream the final answer ────────────────────
-        # We discard the non-streaming response and re-run with .stream()
-        # so the user sees tokens appearing in real-time.
-        print("\nAgent: ", end="", flush=True)
-        collected = []
-        for chunk in llm_with_tools.stream(messages):
-            token = chunk.content if hasattr(chunk, "content") else ""
-            if token:
-                print(token, end="", flush=True)
-                collected.append(token)
-        print(flush=True)
-        return "".join(collected)
+        messages.append(full_response)
+
+        # Check aggregated message for tool calls
+        tool_calls = getattr(full_response, "tool_calls", None) or []
+        if not tool_calls:
+            return full_response.content or ""
+
+        # Execute each tool call
+        for tc in tool_calls:
+            tool_name = tc["name"]
+            tool_args = tc["args"]
+            tool_id = tc["id"]
+            logger.debug(f"Tool call: {tool_name}({tool_args})")
+            if tool_name in tools_dict:
+                try:
+                    result = tools_dict[tool_name].invoke(tool_args)
+                except Exception as e:
+                    result = f"Error executing tool: {e}"
+            else:
+                result = f"Unknown tool: {tool_name}"
+            messages.append(ToolMessage(content=str(result), tool_call_id=tool_id))
 
     return (
         "I've reached the maximum number of iterations. "
