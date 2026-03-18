@@ -1,0 +1,55 @@
+{
+  "coding": [
+    {
+      "id": 1,
+      "text": "Write a Python function that reverses a linked list in-place.",
+      "created": "2026-02-27"
+    },
+    {
+      "id": 2,
+      "text": "Create a REST API endpoint in FastAPI that handles pagination.",
+      "created": "2026-02-27"
+    },
+    {
+      "id": 3,
+      "text": "Write unit tests for a shopping cart class using pytest.",
+      "created": "2026-02-27"
+    },
+    {
+      "id": 8,
+      "text": "Write a Flask REST API with JWT authentication",
+      "created": "2026-03-06"
+    }
+  ],
+  "writing": [
+    {
+      "id": 4,
+      "text": "Draft a professional email declining a meeting invitation.",
+      "created": "2026-02-27"
+    },
+    {
+      "id": 5,
+      "text": "Write a product description for a wireless noise-canceling headphone.",
+      "created": "2026-02-27"
+    }
+  ],
+  "data_analysis": [
+    {
+      "id": 6,
+      "text": "Analyze a CSV dataset of sales records and identify the top 5 products by revenue.",
+      "created": "2026-02-27"
+    },
+    {
+      "id": 7,
+      "text": "Write a SQL query to find customers who made purchases in 3 consecutive months.",
+      "created": "2026-02-27"
+    }
+  ],
+  "poetry": [
+    {
+      "id": 9,
+      "text": "Compose a haiku about rain.",
+      "created": "2026-03-06"
+    }
+  ]
+}

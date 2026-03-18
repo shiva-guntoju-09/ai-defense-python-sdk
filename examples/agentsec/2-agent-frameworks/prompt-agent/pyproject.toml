@@ -1,0 +1,22 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "prompt-category-agent"
+version = "0.1.0"
+description = "Strands agent that manages a local prompt library with AI-driven categorization"
+authors = ["Cisco <ai-defense@cisco.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.14"
+cisco-aidefense-sdk = { path = "../../../..", develop = true }
+
+# Strands Agents SDK
+strands-agents = ">=0.1.0"
+
+# OpenAI SDK (for Azure OpenAI)
+openai = ">=1.0.0"
+
+# Environment variable loading
+python-dotenv = ">=1.0.0"
