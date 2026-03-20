@@ -1,15 +1,32 @@
 [tool.poetry]
 name = "cisco-aidefense-sdk"
-version = "2.0.0"
-description = "Cisco AI Defense Python SDK"
-authors = ["Shiva Guntoju <shguntoj@cisco.com>"]
+version = "2.1.0"
+description = "Cisco AI Defense Python SDK — Integrate AI-powered security, privacy, and safety inspections into your Python applications."
+authors = ["Cisco AI Defense <ai-defense-oss@cisco.com>"]
+maintainers = [
+    "Shiva Guntoju <shguntoj@cisco.com>",
+    "Ujjayant Sinha <ujsinha@cisco.com>",
+    "Rajat Upadhyaya <rupadhy2@cisco.com>",
+]
+license = "Apache-2.0"
 readme = "README.md"
+homepage = "https://github.com/cisco-ai-defense/ai-defense-python-sdk"
+repository = "https://github.com/cisco-ai-defense/ai-defense-python-sdk"
+documentation = "https://github.com/cisco-ai-defense/ai-defense-python-sdk#readme"
+keywords = ["cisco", "ai-defense", "ai-security", "llm", "mcp", "agent-security", "sdk"]
 classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
-    "Intended Audience :: Developers"
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 packages = [{include = "aidefense"}]
 
