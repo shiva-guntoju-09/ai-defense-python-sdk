@@ -1,6 +1,7 @@
 """Tests for package structure and imports (Task 1.1)."""
 
 import sys
+from importlib import metadata
 
 import pytest
 
@@ -27,11 +28,8 @@ class TestPackageStructure:
         """Test that Python version is 3.10+."""
         assert sys.version_info >= (3, 10), "Python 3.10+ required"
 
+    def test_agentsec_version_matches_distribution(self):
+        """Keep runtime version metadata aligned with the installed package."""
+        from aidefense.runtime import agentsec
 
-
-
-
-
-
-
-
+        assert agentsec.__version__ == metadata.version("cisco-aidefense-sdk")
