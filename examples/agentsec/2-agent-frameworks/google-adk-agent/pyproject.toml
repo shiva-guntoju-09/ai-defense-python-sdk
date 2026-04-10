@@ -26,7 +26,7 @@ authors = ["Cisco <ai-defense@cisco.com>"]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.14"
-cisco-aidefense-sdk = { path = "../../../..", develop = true }
+cisco-aidefense-sdk = ">=2.1.1"
 
 # Google Agent Development Kit
 google-adk = ">=1.0.0"
